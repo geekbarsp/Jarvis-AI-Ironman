@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { encodeMonoWav, shouldKeepVoiceOrbVisible } from "./audio.js";
+import { normalizeSpeechText } from "../core/speech.js";
 
 const STORAGE_KEY = "jarvis-conversation-v1";
 const SETTINGS_KEY = "jarvis-settings-v1";
@@ -491,10 +492,11 @@ export default function App() {
   }
 
   function speakWithBrowser(text, force = false) {
-    if ((!settings.speak && !force) || !window.speechSynthesis || !text.trim()) return;
+    const spokenText = normalizeSpeechText(text);
+    if ((!settings.speak && !force) || !window.speechSynthesis || !spokenText) return;
     stopSpeechVisualization();
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text.replace(/```[\s\S]*?```/g, "code block"));
+    const utterance = new SpeechSynthesisUtterance(spokenText);
     speechActiveRef.current = true;
     setIsSpeaking(true);
     const timer = setInterval(() => setVoiceLevel(0.24 + Math.random() * 0.56), 90);
@@ -514,8 +516,9 @@ export default function App() {
   }
 
   async function speak(text, voiceId = settings.voiceId, force = false) {
-    if ((!settings.speak && !force) || !text.trim()) return;
-    lastSpokenTextRef.current = text;
+    const spokenText = normalizeSpeechText(text);
+    if ((!settings.speak && !force) || !spokenText) return;
+    lastSpokenTextRef.current = spokenText;
     speechAudioRef.current?.pause();
     if (speechUrlRef.current) URL.revokeObjectURL(speechUrlRef.current);
     window.speechSynthesis?.cancel();
@@ -525,7 +528,7 @@ export default function App() {
       const response = await fetch("/api/speech", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, voiceId }),
+        body: JSON.stringify({ text: spokenText, voiceId }),
       });
       if (!response.ok) throw new Error("Fish Audio voice unavailable");
       const audioBlob = await response.blob();
@@ -546,7 +549,7 @@ export default function App() {
       await audio.play();
     } catch {
       speechActiveRef.current = false;
-      speakWithBrowser(text, force);
+      speakWithBrowser(spokenText, force);
     }
   }
 

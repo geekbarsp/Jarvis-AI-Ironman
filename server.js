@@ -15,6 +15,7 @@ import { DataStore } from "./core/storage.js";
 import { ToolRegistry } from "./core/tools.js";
 import { BrowserWorkspaceBridge } from "./core/browser-bridge.js";
 import { CognitiveCore } from "./core/cognitive-core.js";
+import { normalizeSpeechText } from "./core/speech.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -399,7 +400,7 @@ app.post("/api/dictation/clean", async (req, res) => {
 
 app.post("/api/speech", async (req, res) => {
   const apiKey = readFishAudioKey();
-  const text = String(req.body?.text || "").trim().slice(0, 5000);
+  const text = normalizeSpeechText(req.body?.text).slice(0, 5000);
   const requestedVoiceId = String(req.body?.voiceId || FISH_AUDIO_VOICE_ID).trim();
   if (!apiKey) {
     return res.status(503).json({ error: "Add your Fish Audio API key to fish-api.txt and save the file." });

@@ -15,6 +15,7 @@ import { completedToolFallback } from "../core/agent.js";
 import { BrowserWorkspaceBridge, sanitizeBrowserUrl } from "../core/browser-bridge.js";
 import { WorkspaceService, applicationMatchScore, normalizeWorkspaceName, resolveWindowBounds, windowMatchScore } from "../core/workspaces.js";
 import { encodeMonoWav, shouldKeepVoiceOrbVisible } from "../src/audio.js";
+import { normalizeSpeechText } from "../core/speech.js";
 
 function temporaryDirectory(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-test-"));
@@ -38,6 +39,13 @@ test("voice orb remains visible through capture and response processing", () => 
   assert.equal(shouldKeepVoiceOrbVisible({ status: "thinking" }), true);
   assert.equal(shouldKeepVoiceOrbVisible({ speaking: true, status: "armed" }), true);
   assert.equal(shouldKeepVoiceOrbVisible({ status: "armed", awake: false }), false);
+});
+
+test("speech text removes Markdown without reading formatting characters", () => {
+  const spoken = normalizeSpeechText("## **Status**\n* Build passed\n* Open [GitHub](https://github.com)\n\n`npm test` and 2 * 3 = 6.");
+  assert.equal(spoken, "Status. Build passed. Open GitHub. npm test and 2 times 3 = 6.");
+  assert.doesNotMatch(spoken, /[*#|`]/);
+  assert.equal(normalizeSpeechText("```js\nconst value = true;\n```"), "Code block omitted.");
 });
 
 function workspaceState(windows = []) {
