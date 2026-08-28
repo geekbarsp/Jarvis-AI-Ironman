@@ -1,0 +1,63 @@
+{
+  "llm": {
+    "provider": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
+    "apiKey": "",
+    "chatModel": "gemma3:4b",
+    "fastModel": "gemma3:4b",
+    "embeddingModel": "nomic-embed-text",
+    "temperature": 0.45,
+    "contextSize": 8192,
+    "providerFallback": true,
+    "groqModel": "openai/gpt-oss-120b",
+    "geminiModel": "gemini-3.6-flash"
+  },
+  "assistant": {
+    "name": "JERVIS",
+    "wakeAliases": [
+      "wake up jarvis",
+      "jarvis",
+      "jervis",
+      "jarves",
+      "jarviss",
+      "service"
+    ],
+    "stopCommands": [
+      "stop",
+      "cancel",
+      "quiet",
+      "never mind",
+      "nevermind"
+    ],
+    "timezone": "Asia/Manila",
+    "location": "Manila, Philippines",
+    "plannerEnabled": true,
+    "evaluatorEnabled": true,
+    "memoryDigestEnabled": true,
+    "toolResultDigestEnabled": true,
+    "toolSelectionStrategy": "llm",
+    "maxAgentTurns": 7
+  },
+  "dictation": {
+    "enabled": true,
+    "hotkey": "CommandOrControl+Alt+D",
+    "removeFillers": false,
+    "customDictionary": [],
+    "historyLimit": 200
+  },
+  "speechRecognition": {
+    "whisperModel": "base.en",
+    "device": "cpu",
+    "minConfidence": 0.18,
+    "noSpeechThreshold": 0.7
+  },
+  "tools": {
+    "braveApiKey": "",
+    "allowedRoots": [
+      "C:\\Users\\Jay\\Desktop",
+      "C:\\Users\\Jay\\Documents",
+      "C:\\Users\\Jay\\Downloads"
+    ]
+  },
+  "mcpServers": {}
+}

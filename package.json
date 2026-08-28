@@ -1,0 +1,67 @@
+{
+  "name": "jervis-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite",
+    "dev:server": "node --watch server.js",
+    "desktop:dev": "concurrently -k \"npm:dev:client\" \"wait-on http://127.0.0.1:5173 && electron\\launch.cmd . --dev\"",
+    "desktop": "npm run build && electron\\launch.cmd .",
+    "package:win": "npm run build && electron-builder --win portable",
+    "build": "vite build",
+    "test": "node --test tests/*.test.mjs",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cheerio": "^1.2.0",
+    "express": "^5.1.0",
+    "lucide-react": "^0.468.0",
+    "openai": "^6.0.0",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.0",
+    "concurrently": "^9.1.2",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.0.12",
+    "vite": "^6.1.0",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.jervis.assistant",
+    "productName": "JERVIS",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "core/**/*",
+      "legacy_runtime/**/*",
+      "assets/**/*",
+      "backend/**/*",
+      "server.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "assets/jervis-icon.png",
+      "artifactName": "JERVIS-${version}-portable.${ext}"
+    },
+    "extraResources": [
+      {
+        "from": "backend/dist/jervis-whisper.exe",
+        "to": "jervis-whisper.exe"
+      }
+    ]
+  }
+}
