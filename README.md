@@ -1,4 +1,4 @@
-# JERVIS Desktop
+# JARVIS Desktop
 
 Private Windows voice assistant with a local agent runtime. The current interface is intentionally independent from the reference project; its backend behavior is adapted from the feature set described by `isair/jarvis`.
 
