@@ -30,3 +30,7 @@ export function encodeMonoWav(chunks, sampleRate) {
   }
   return buffer;
 }
+
+export function shouldKeepVoiceOrbVisible({ recording = false, speaking = false, status = "idle", awake = false } = {}) {
+  return recording || speaking || awake || ["awake", "listening", "transcribing", "thinking", "speaking"].includes(status);
+}

@@ -21,7 +21,7 @@ export class MCPManager {
   async connectServer(name, definition) {
     if (this.connections.has(name)) return this.connections.get(name);
     if (!definition?.command || definition.enabled === false) return null;
-    const client = new Client({ name: "jervis-assistant", version: "1.0.0" });
+    const client = new Client({ name: "jarvis-assistant", version: "1.0.0" });
     const transport = new StdioClientTransport({
       command: definition.command,
       args: Array.isArray(definition.args) ? definition.args : [],

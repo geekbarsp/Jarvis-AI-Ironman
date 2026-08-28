@@ -4,6 +4,7 @@ import {
   AudioLines,
   Bell,
   Bot,
+  BrainCircuit,
   CalendarDays,
   Check,
   ChevronDown,
@@ -11,6 +12,7 @@ import {
   Cpu,
   Download,
   HardDrive,
+  LockKeyhole,
   Mic,
   MicOff,
   MessageSquare,
@@ -18,6 +20,8 @@ import {
   Plus,
   Send,
   Settings2,
+  Shield,
+  ShieldCheck,
   Square,
   Trash2,
   Volume2,
@@ -25,10 +29,12 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { encodeMonoWav } from "./audio.js";
+import { encodeMonoWav, shouldKeepVoiceOrbVisible } from "./audio.js";
 
-const STORAGE_KEY = "jervis-conversation-v1";
-const SETTINGS_KEY = "jervis-settings-v1";
+const STORAGE_KEY = "jarvis-conversation-v1";
+const SETTINGS_KEY = "jarvis-settings-v1";
+const IRON_MAN_VOICE_ID = "f22f684f44d74c4a86d72d95c296ba26";
+const LEGACY_VOICE_ID = "933563129e564b19a115bedd57b7406a";
 const STARTER_MESSAGE = {
   id: "welcome",
   role: "assistant",
@@ -106,20 +112,28 @@ export function CoreVisual({ state, onClick, level = 0 }) {
 
 export default function App() {
   const [messages, setMessages] = useState(() => loadJson(STORAGE_KEY, [STARTER_MESSAGE]));
-  const [settings, setSettings] = useState(() => ({
-    model: "groq:openai/gpt-oss-20b",
-    speak: true,
-    handsFree: true,
-    microphoneId: "default",
-    voiceId: "933563129e564b19a115bedd57b7406a",
-    ...loadJson(SETTINGS_KEY, {}),
-  }));
+  const [settings, setSettings] = useState(() => {
+    const saved = loadJson(SETTINGS_KEY, {});
+    return {
+      model: "groq:openai/gpt-oss-20b",
+      speak: true,
+      handsFree: true,
+      microphoneId: "default",
+      ...saved,
+      voiceId: !saved.voiceId || saved.voiceId === LEGACY_VOICE_ID ? IRON_MAN_VOICE_ID : saved.voiceId,
+    };
+  });
   const [input, setInput] = useState("");
   const [status, setStatus] = useState("idle");
   const [configured, setConfigured] = useState(false);
   const [voiceConfigured, setVoiceConfigured] = useState(false);
   const [cloudProviders, setCloudProviders] = useState([]);
   const [ollamaOnline, setOllamaOnline] = useState(false);
+  const [permissionMode, setPermissionMode] = useState("standard");
+  const [permissionSaving, setPermissionSaving] = useState(false);
+  const [routineLearning, setRoutineLearning] = useState(true);
+  const [routineData, setRoutineData] = useState({ observations: 0, insights: [] });
+  const [cognitiveData, setCognitiveData] = useState({ active: null, goals: [], memories: {}, events: [] });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [microphones, setMicrophones] = useState([]);
   const [voiceOptions, setVoiceOptions] = useState([]);
@@ -189,7 +203,7 @@ export default function App() {
 
   function updateOrb(visible, state = statusRef.current, level = voiceLevel) {
     orbVisibleRef.current = visible;
-    window.jervisDesktop?.updateOrb({ visible, state, level });
+    window.jarvisDesktop?.updateOrb({ visible, state, level });
   }
 
   function revealOrb(state = "awake") {
@@ -199,13 +213,27 @@ export default function App() {
 
   function hideOrbSoon(delay = 1800) {
     window.clearTimeout(orbHideTimerRef.current);
-    orbHideTimerRef.current = window.setTimeout(() => updateOrb(false, "armed", 0), delay);
+    orbHideTimerRef.current = window.setTimeout(() => {
+      const awake = Date.now() < wakeActiveUntilRef.current;
+      const keepVisible = shouldKeepVoiceOrbVisible({
+        recording: recorderRef.current?.state === "recording",
+        speaking: speechActiveRef.current,
+        status: statusRef.current,
+        awake,
+      });
+      if (keepVisible) {
+        const remainingAwake = Math.max(0, wakeActiveUntilRef.current - Date.now());
+        hideOrbSoon(remainingAwake > 0 ? Math.min(1000, remainingAwake + 50) : 500);
+        return;
+      }
+      updateOrb(false, "armed", 0);
+    }, delay);
   }
 
   useEffect(() => {
     if (!orbVisibleRef.current) return;
     const orbState = isSpeaking ? "speaking" : Date.now() < wakeActiveUntilRef.current && status === "armed" ? "awake" : status;
-    window.jervisDesktop?.updateOrb({ visible: true, state: orbState, level: voiceLevel });
+    window.jarvisDesktop?.updateOrb({ visible: true, state: orbState, level: voiceLevel });
   }, [status, isSpeaking, voiceLevel]);
 
   useEffect(() => {
@@ -220,6 +248,8 @@ export default function App() {
     if (settingsOpen) {
       refreshMicrophones();
       refreshVoices();
+      refreshRoutines();
+      fetch("/api/cognitive").then((response) => response.json()).then(setCognitiveData).catch(() => null);
     }
   }, [settingsOpen]);
 
@@ -232,11 +262,13 @@ export default function App() {
         setVoiceConfigured(Boolean(data.fishAudioConfigured));
         setCloudProviders([data.groqConfigured && "Groq", data.geminiConfigured && "Gemini", data.openAiConfigured && "OpenAI"].filter(Boolean));
         setOllamaOnline(Boolean(data.ollamaOnline));
+        setPermissionMode(data.permissionMode || "standard");
+        setRoutineLearning(data.features?.routineLearning !== false);
         setSettings((current) => current.model.startsWith("ollama:") && data.configured
           ? { ...current, model: data.recommendedModel }
           : current);
       })
-      .catch(() => setError("JERVIS core is offline."));
+      .catch(() => setError("JARVIS core is offline."));
     return () => clearInterval(clock);
   }, []);
 
@@ -349,6 +381,63 @@ export default function App() {
     }
   }
 
+  async function changePermissionMode(mode) {
+    if (permissionSaving || mode === permissionMode) return;
+    if (mode === "full" && !window.confirm("Full Access allows JARVIS to use installed tools across all mounted drives, control apps and the system, and open communication actions. Existing destructive-action confirmations still apply. Enable Full Access?")) return;
+    setPermissionSaving(true);
+    try {
+      const response = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ permissions: { mode } }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Permissions could not be saved.");
+      setPermissionMode(mode);
+    } catch (permissionError) {
+      setError(permissionError.message);
+    } finally {
+      setPermissionSaving(false);
+    }
+  }
+
+  async function refreshRoutines() {
+    try {
+      const response = await fetch("/api/routines");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Routine learning data could not be loaded.");
+      setRoutineLearning(data.enabled !== false);
+      setRoutineData({ observations: data.observations || 0, insights: data.insights || [] });
+    } catch (routineError) {
+      setError(routineError.message);
+    }
+  }
+
+  async function toggleRoutineLearning() {
+    const enabled = !routineLearning;
+    try {
+      const response = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assistant: { routineLearningEnabled: enabled } }),
+      });
+      if (!response.ok) throw new Error("Routine learning preference could not be saved.");
+      setRoutineLearning(enabled);
+    } catch (routineError) {
+      setError(routineError.message);
+    }
+  }
+
+  async function clearRoutines() {
+    if (!window.confirm("Clear all locally learned behavioral patterns? This does not clear conversations or other JARVIS memory.")) return;
+    const response = await fetch("/api/routines", { method: "DELETE" });
+    if (!response.ok) {
+      setError("Learned routines could not be cleared.");
+      return;
+    }
+    setRoutineData({ observations: 0, insights: [] });
+  }
+
   useEffect(() => {
     if (!settings.handsFree || !canListen) return undefined;
     const timer = setTimeout(() => startListening(undefined, "wake"), 1200);
@@ -358,9 +447,9 @@ export default function App() {
   useEffect(() => () => stopListening(), []);
 
   useEffect(() => {
-    if (!window.jervisDesktop) return undefined;
-    const removeToggle = window.jervisDesktop.onDictationToggle(() => toggleDictation());
-    const removeCancel = window.jervisDesktop.onDictationCancel(() => stopDictation(true));
+    if (!window.jarvisDesktop) return undefined;
+    const removeToggle = window.jarvisDesktop.onDictationToggle(() => toggleDictation());
+    const removeCancel = window.jarvisDesktop.onDictationCancel(() => stopDictation(true));
     return () => {
       removeToggle?.();
       removeCancel?.();
@@ -464,7 +553,7 @@ export default function App() {
   async function previewVoice() {
     if (voicePreviewing) return;
     setVoicePreviewing(true);
-    try { await speak("Voice selected. JERVIS is ready.", settings.voiceId, true); }
+    try { await speak("Voice selected. JARVIS is ready.", settings.voiceId, true); }
     finally { setTimeout(() => setVoicePreviewing(false), 1200); }
   }
 
@@ -475,7 +564,7 @@ export default function App() {
       const initialMode = mode === "manual" || Date.now() < wakeActiveUntilRef.current ? "command" : "wake";
       const response = await fetch("/api/transcribe", {
         method: "POST",
-        headers: { "Content-Type": blob.type || "audio/webm", "X-Jervis-Transcription-Mode": initialMode },
+        headers: { "Content-Type": blob.type || "audio/webm", "X-Jarvis-Transcription-Mode": initialMode },
         body: blob,
       });
       let data = await response.json().catch(() => ({}));
@@ -489,8 +578,8 @@ export default function App() {
       }
       const recentAssistantSpeech = speechActiveRef.current || Date.now() - lastSpeechEndRef.current < 8000;
       if (recentAssistantSpeech && transcriptSimilarity(transcript, lastSpokenTextRef.current) >= 0.72) return;
-      const wakeUpOnlyPattern = /^wake\s+up[,\s]+(?:jarvis|jervis|jarves|jarviss|service|travis)[.!?,\s]*$/i;
-      const nameOnlyPattern = /^(?:jarvis|jervis|jarves|jarviss|service|travis)[.!?,\s]*$/i;
+      const wakeUpOnlyPattern = /^wake\s+up[,\s]+(?:jarvis|jarves|jarviss|service|travis)[.!?,\s]*$/i;
+      const nameOnlyPattern = /^(?:jarvis|jarves|jarviss|service|travis)[.!?,\s]*$/i;
       if (wakeUpOnlyPattern.test(transcript) || nameOnlyPattern.test(transcript)) {
         wakeActiveUntilRef.current = Date.now() + 12000;
         revealOrb("awake");
@@ -504,12 +593,12 @@ export default function App() {
         }, 12100);
         return;
       }
-      const leadingWakeCandidate = /^(?:wake\s+up[,\s]+)?(?:jarvis|jervis|jarves|jarviss|service|travis)\b/i;
+      const leadingWakeCandidate = /^(?:wake\s+up[,\s]+)?(?:jarvis|jarves|jarviss|service|travis)\b/i;
       const localWakeCandidate = Boolean(data.local && leadingWakeCandidate.test(transcript));
       if (localWakeCandidate) {
         const cloudResponse = await fetch("/api/transcribe", {
           method: "POST",
-          headers: { "Content-Type": blob.type || "audio/webm", "X-Jervis-Transcription-Mode": "command" },
+          headers: { "Content-Type": blob.type || "audio/webm", "X-Jarvis-Transcription-Mode": "command" },
           body: blob,
         });
         const cloudData = await cloudResponse.json().catch(() => ({}));
@@ -519,7 +608,7 @@ export default function App() {
         }
       }
       if (localWakeCandidate && data.local) transcript = transcript.replace(leadingWakeCandidate, "Jarvis");
-      const wakePattern = /\b(?:wake\s+up[,\s]+)?(?:jarvis|jervis)\b/gi;
+      const wakePattern = /\b(?:wake\s+up[,\s]+)?jarvis\b/gi;
       const wasWakeWorded = wakePattern.test(transcript);
       wakePattern.lastIndex = 0;
       const query = transcript.replace(wakePattern, " ").replace(/\s+/g, " ").trim().replace(/^[,.!?;:\s]+/, "");
@@ -555,6 +644,13 @@ export default function App() {
     pcmPreRollSamplesRef.current = 0;
     speechStartedRef.current = performance.now();
     lastVoiceRef.current = performance.now();
+    const engaged = listeningModeRef.current === "manual" || Date.now() < wakeActiveUntilRef.current;
+    if (engaged) {
+      if (listeningModeRef.current === "wake") wakeActiveUntilRef.current = Date.now() + 20000;
+      revealOrb("listening");
+      statusRef.current = "listening";
+      setStatus("listening");
+    }
     const recorder = {
       state: "recording",
       stop: () => {
@@ -570,6 +666,10 @@ export default function App() {
         discardRecordingRef.current = false;
         if (!speechActiveRef.current) setVoiceLevel(0);
         if (!shouldDiscard && duration >= 0.25) {
+          const showProgress = listeningModeRef.current === "manual" || Date.now() < wakeActiveUntilRef.current || orbVisibleRef.current;
+          statusRef.current = "transcribing";
+          setStatus("transcribing");
+          if (showProgress) revealOrb("transcribing");
           const wav = encodeMonoWav(chunks, pcmSampleRateRef.current);
           transcribeAudio(new Blob([wav], { type: "audio/wav" }));
         }
@@ -592,7 +692,7 @@ export default function App() {
       voiceNoiseFloorRef.current = voiceNoiseFloorRef.current * 0.96 + rms * 0.04;
     }
     const startThreshold = Math.max(0.0035, Math.min(0.014, voiceNoiseFloorRef.current * 1.75));
-    const continueThreshold = Math.max(0.003, voiceNoiseFloorRef.current * 1.25);
+    const continueThreshold = Math.max(0.0022, voiceNoiseFloorRef.current * 1.08);
     if (!speechActiveRef.current && nowMs - lastLevelUpdateRef.current > 55) {
       const audible = rms > voiceNoiseFloorRef.current * 1.15;
       setVoiceLevel(audible ? Math.min(1, rms / Math.max(0.025, startThreshold * 2.2)) : 0);
@@ -602,10 +702,11 @@ export default function App() {
     if (canCapture && rms > (recorderRef.current ? continueThreshold : startThreshold)) {
       if (!recorderRef.current) createSegmentRecorder();
       lastVoiceRef.current = nowMs;
+      if (Date.now() < wakeActiveUntilRef.current) wakeActiveUntilRef.current = Date.now() + 20000;
     }
     if (recorderRef.current && (
-      nowMs - lastVoiceRef.current > 650 ||
-      nowMs - speechStartedRef.current > 15000
+      nowMs - lastVoiceRef.current > 1500 ||
+      nowMs - speechStartedRef.current > 30000
     )) {
       discardRecordingRef.current = false;
       recorderRef.current.stop();
@@ -674,7 +775,7 @@ export default function App() {
       listeningModeRef.current = "off";
       setListeningMode("off");
       if (microphoneError.name === "NotAllowedError") {
-        setError("Microphone access is blocked. Allow JERVIS in Windows microphone privacy settings, then try again.");
+        setError("Microphone access is blocked. Allow JARVIS in Windows microphone privacy settings, then try again.");
       } else if (microphoneError.name === "NotFoundError" || microphoneError.name === "OverconstrainedError") {
         setError("No microphone was detected. Connect one or select an input device in system settings.");
       } else if (microphoneError.name === "NotReadableError") {
@@ -754,10 +855,10 @@ export default function App() {
         if (dictationOwnsStreamRef.current) stream.getTracks().forEach((track) => track.stop());
         dictationStreamRef.current = null;
         dictationOwnsStreamRef.current = false;
-        window.jervisDesktop?.setDictationState(false);
+        window.jarvisDesktop?.setDictationState(false);
         if (discard || blob.size < 1000) return;
         try {
-          const response = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": blob.type || "audio/webm", "X-Jervis-Transcription-Mode": "command" }, body: blob });
+          const response = await fetch("/api/transcribe", { method: "POST", headers: { "Content-Type": blob.type || "audio/webm", "X-Jarvis-Transcription-Mode": "command" }, body: blob });
           const transcription = await response.json();
           if (!response.ok) throw new Error(transcription.error || "Dictation transcription failed.");
           const cleanedResponse = await fetch("/api/dictation/clean", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: transcription.text }) });
@@ -765,16 +866,16 @@ export default function App() {
           const text = String(cleaned.text || transcription.text || "").trim();
           if (!text) return;
           await fetch("/api/dictation/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-          window.jervisDesktop?.pasteText(text);
+          window.jarvisDesktop?.pasteText(text);
         } catch (dictationError) {
           setError(dictationError.message);
         }
       };
       recorder.start(250);
-      window.jervisDesktop?.setDictationState(true);
+      window.jarvisDesktop?.setDictationState(true);
     } catch (dictationError) {
       setError(`Dictation could not start: ${dictationError.message}`);
-      window.jervisDesktop?.setDictationState(false);
+      window.jarvisDesktop?.setDictationState(false);
     }
   }
 
@@ -855,6 +956,7 @@ export default function App() {
 
   function stopResponse() {
     abortRef.current?.abort();
+    fetch("/api/cognitive/cancel", { method: "POST" }).catch(() => null);
     speechAudioRef.current?.pause();
     window.speechSynthesis?.cancel();
     setStatus(recorderStreamRef.current ? (listeningModeRef.current === "wake" ? "armed" : "listening") : "idle");
@@ -869,7 +971,7 @@ export default function App() {
   }
 
   async function clearMemory() {
-    if (!window.confirm("Clear this conversation and JERVIS long-term memory?")) return;
+    if (!window.confirm("Clear this conversation and JARVIS long-term memory?")) return;
     stopResponse();
     await fetch("/api/memory", { method: "DELETE" }).catch(() => null);
     setMessages([STARTER_MESSAGE]);
@@ -880,12 +982,12 @@ export default function App() {
   function exportConversation() {
     const transcript = messages
       .filter((message) => message.id !== "welcome")
-      .map((message) => `${message.role === "assistant" ? "JERVIS" : "YOU"}\n${message.content}`)
+      .map((message) => `${message.role === "assistant" ? "JARVIS" : "YOU"}\n${message.content}`)
       .join("\n\n");
     const url = URL.createObjectURL(new Blob([transcript], { type: "text/plain" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `jervis-chat-${new Date().toISOString().slice(0, 10)}.txt`;
+    link.download = `jarvis-chat-${new Date().toISOString().slice(0, 10)}.txt`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -901,7 +1003,7 @@ export default function App() {
   const activeMessages = messages.filter((message) => message.id !== "welcome");
   const providerName = settings.model.split(":")[0].toUpperCase();
   const visualStatus = isSpeaking ? "speaking" : status;
-  const statusLabel = isSpeaking ? "JERVIS is speaking" : status === "awake" ? "Awake - waiting for command" : status === "armed" ? "Listening for wake word" : status === "listening" ? "Listening to your command" : status === "transcribing" ? "Understanding voice" : status === "thinking" ? "Processing request" : "Standing by";
+  const statusLabel = isSpeaking ? "JARVIS is speaking" : status === "awake" ? "Awake - waiting for command" : status === "armed" ? "Listening for wake word" : status === "listening" ? "Listening to your command" : status === "transcribing" ? "Understanding voice" : status === "thinking" ? "Processing request" : "Standing by";
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 18 ? "Good afternoon" : "Good evening";
   const formatSchedule = (value) => new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
 
@@ -963,7 +1065,7 @@ export default function App() {
             {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><X size={15} /></button></div>}
             <div className={`composer ${status === "listening" ? "listening" : ""}`}>
               <button className="voice-button" onClick={toggleListening} title={status === "listening" ? "Stop manual input" : "Start manual voice input"} aria-label="Toggle voice input">{status === "listening" ? <MicOff size={20} /> : <Mic size={20} />}</button>
-              <textarea ref={textareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder={status === "awake" ? "Ready for your command..." : status === "armed" ? "Say JARVIS to begin..." : status === "listening" ? "Listening to your command..." : status === "transcribing" ? "Transcribing voice..." : "Type a command..."} rows={1} aria-label="Message JERVIS" />
+              <textarea ref={textareaRef} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder={status === "awake" ? "Ready for your command..." : status === "armed" ? "Say JARVIS to begin..." : status === "listening" ? "Listening to your command..." : status === "transcribing" ? "Transcribing voice..." : "Type a command..."} rows={1} aria-label="Message JARVIS" />
               {status === "thinking" ? <button className="send-button stop" onClick={stopResponse} title="Stop response" aria-label="Stop response"><Square size={16} /></button> : <button className="send-button" onClick={() => sendMessage()} disabled={!input.trim()} title="Send message" aria-label="Send message"><Send size={17} /></button>}
             </div>
             <div className="suggestions">{SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => sendMessage(suggestion)}>{suggestion}</button>)}</div>
@@ -978,7 +1080,7 @@ export default function App() {
             </div>
             <div className="conversation-feed" aria-live="polite">
               {!hasConversation && <div className="empty-list"><Bot size={18} /><span>Ready for your first command.</span></div>}
-              {activeMessages.map((message) => <article className={`feed-message ${message.role}`} key={message.id}><strong>{message.role === "assistant" ? "JERVIS" : "YOU"}</strong>{message.content ? <div><MessageText text={message.content} /></div> : <span className="thinking-dots"><i /><i /><i /></span>}</article>)}
+              {activeMessages.map((message) => <article className={`feed-message ${message.role}`} key={message.id}><strong>{message.role === "assistant" ? "JARVIS" : "YOU"}</strong>{message.content ? <div><MessageText text={message.content} /></div> : <span className="thinking-dots"><i /><i /><i /></span>}</article>)}
               <div ref={endRef} />
             </div>
           </section>
@@ -995,7 +1097,7 @@ export default function App() {
 
       {settingsOpen && (
         <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="settings-panel" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="JERVIS settings">
+          <section className="settings-panel" onMouseDown={(event) => event.stopPropagation()} aria-modal="true" role="dialog" aria-label="JARVIS settings">
             <header><div><span className="section-label">CONFIGURATION</span><h2>System settings</h2></div><button className="icon-button" onClick={() => setSettingsOpen(false)} aria-label="Close settings"><X size={18} /></button></header>
             <div className="setting-row">
               <div><strong>Voice responses</strong><span>Read completed answers aloud</span></div>
@@ -1008,7 +1110,7 @@ export default function App() {
               <div className="microphone-control">
                 <div className="select-wrap">
                   <select id="voice-model" value={settings.voiceId} onChange={(event) => setSettings((current) => ({ ...current, voiceId: event.target.value }))}>
-                    {!voiceOptions.length && <option value="933563129e564b19a115bedd57b7406a">Sarah</option>}
+                    {!voiceOptions.length && <option value={IRON_MAN_VOICE_ID}>Jarvis | Iron Man</option>}
                     {voiceOptions.map((voice) => <option key={voice.id} value={voice.id}>{voice.personal ? `My voice - ${voice.name}` : voice.name}</option>)}
                   </select>
                   <ChevronDown size={17} />
@@ -1020,7 +1122,7 @@ export default function App() {
               <p className="microphone-message ready">The selected voice is saved and used for every response.</p>
             </div>
             <div className="setting-row">
-              <div><strong>Hands-free listening</strong><span>Respond when you say Jarvis or Jervis</span></div>
+              <div><strong>Hands-free listening</strong><span>Respond when you say Jarvis or Wake Up Jarvis</span></div>
               <button className={`toggle ${settings.handsFree ? "active" : ""}`} onClick={() => {
                 const enabled = !settings.handsFree;
                 setSettings((current) => ({ ...current, handsFree: enabled }));
@@ -1054,7 +1156,6 @@ export default function App() {
               <label htmlFor="model">Intelligence model</label>
               <div className="select-wrap">
                 <select id="model" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}>
-                  <option value="ollama:gemma3:4b">Local Gemma 3 · Private</option>
                   <option value="groq:openai/gpt-oss-120b">Groq GPT-OSS 120B · Fast</option>
                   <option value="groq:openai/gpt-oss-20b">Groq GPT-OSS 20B · Efficient</option>
                   <option value="gemini:gemini-3.6-flash">Gemini 3.6 Flash · Balanced</option>
@@ -1064,6 +1165,57 @@ export default function App() {
                   <option value="gpt-5.6-sol">GPT-5.6 Sol · Frontier</option>
                 </select>
                 <ChevronDown size={17} />
+              </div>
+            </div>
+            <div className="setting-stack permission-setting">
+              <div className="permission-heading"><label>AI computer permissions</label><span className={`permission-state ${permissionMode}`}>{permissionMode.toUpperCase()}</span></div>
+              <div className="permission-segments" role="group" aria-label="AI computer permission level">
+                <button className={permissionMode === "restricted" ? "active" : ""} onClick={() => changePermissionMode("restricted")} disabled={permissionSaving}>
+                  <LockKeyhole size={16} /><span>Restricted</span>
+                </button>
+                <button className={permissionMode === "standard" ? "active" : ""} onClick={() => changePermissionMode("standard")} disabled={permissionSaving}>
+                  <Shield size={16} /><span>Standard</span>
+                </button>
+                <button className={permissionMode === "full" ? "active full" : ""} onClick={() => changePermissionMode("full")} disabled={permissionSaving}>
+                  <ShieldCheck size={16} /><span>Full access</span>
+                </button>
+              </div>
+              <p className={`permission-description ${permissionMode}`}>
+                {permissionMode === "restricted" && "Information and utility tools only. PC files, apps, private data, and controls are blocked."}
+                {permissionMode === "standard" && "Personal folders and ordinary app controls are available. Communications and high-impact tools are blocked."}
+                {permissionMode === "full" && "All mounted drives and installed automation tools are available. Account integrations still require their own sign-in."}
+              </p>
+            </div>
+            <div className="setting-stack routine-setting">
+              <div className="routine-heading">
+                <div><BrainCircuit size={17} /><label>Behavioral pattern learning</label></div>
+                <button className={`toggle ${routineLearning ? "active" : ""}`} onClick={toggleRoutineLearning} role="switch" aria-checked={routineLearning}>
+                  <span>{routineLearning ? <Check size={13} /> : <X size={13} />}</span>
+                </button>
+              </div>
+              <div className="routine-summary">
+                <span>{routineData.observations} observations</span>
+                <span>{routineData.insights.length} learned patterns</span>
+                <button onClick={clearRoutines} disabled={!routineData.observations} title="Clear learned behavioral patterns" aria-label="Clear learned behavioral patterns"><Trash2 size={14} /></button>
+              </div>
+              <div className="routine-list">
+                {routineData.insights.slice(0, 3).map((routine) => (
+                  <div key={`${routine.signature}-${routine.period}-${routine.dayType}`}><span>{routine.sample}</span><small>{routine.period} · {routine.dayType} · {routine.count} times</small></div>
+                ))}
+                {!routineData.insights.length && <p>{routineLearning ? "Learning repeated routines locally. A pattern appears after three matching observations." : "Routine learning is paused."}</p>}
+              </div>
+            </div>
+            <div className="setting-stack cognitive-debug">
+              <div className="routine-heading"><div><Cpu size={17} /><label>Cognitive agent</label></div><span className={`permission-state ${cognitiveData.active ? "full" : "standard"}`}>{cognitiveData.active ? "ACTIVE" : "IDLE"}</span></div>
+              <div className="routine-summary">
+                <span>{cognitiveData.goals?.length || 0} recent goals</span>
+                <span>{cognitiveData.memories?.episodes?.length || 0} episodes</span>
+                <span>{cognitiveData.memories?.procedures?.length || 0} procedures</span>
+              </div>
+              <div className="cognitive-state">
+                <div><span>Current goal</span><b>{cognitiveData.active?.goal?.description || "No active goal"}</b></div>
+                <div><span>Last action</span><b>{cognitiveData.active?.workingMemory?.actions?.at(-1)?.name || cognitiveData.events?.at(-1)?.type || "Standing by"}</b></div>
+                <div><span>Environment</span><b>{cognitiveData.active?.workingMemory?.environment?.activeApplication || "Observed when a task starts"}</b></div>
               </div>
             </div>
             <div className={`key-status ${configured ? "ready" : "missing"}`}>

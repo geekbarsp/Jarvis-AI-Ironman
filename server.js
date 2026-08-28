@@ -10,18 +10,21 @@ import OpenAI, { toFile } from "openai";
 import { AgentRuntime } from "./core/agent.js";
 import { ConfigStore } from "./core/config.js";
 import { MCPManager } from "./core/mcp.js";
+import { RoutineLearner } from "./core/routines.js";
 import { DataStore } from "./core/storage.js";
 import { ToolRegistry } from "./core/tools.js";
+import { BrowserWorkspaceBridge } from "./core/browser-bridge.js";
+import { CognitiveCore } from "./core/cognitive-core.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = Number(process.env.PORT || 8787);
-const DATA_DIR = process.env.JERVIS_DATA_DIR || __dirname;
+const DATA_DIR = process.env.JARVIS_DATA_DIR || process.env.JERVIS_DATA_DIR || __dirname;
 const KEY_PATH = path.join(DATA_DIR, "api.txt");
 const FISH_AUDIO_KEY_PATH = path.join(DATA_DIR, "fish-api.txt");
 const GROQ_KEY_PATH = path.join(DATA_DIR, "groq-api.txt");
 const GEMINI_KEY_PATH = path.join(DATA_DIR, "gemini-api.txt");
-const FISH_AUDIO_VOICE_ID = process.env.FISH_AUDIO_VOICE_ID || "933563129e564b19a115bedd57b7406a";
+const FISH_AUDIO_VOICE_ID = process.env.FISH_AUDIO_VOICE_ID || "f22f684f44d74c4a86d72d95c296ba26";
 const FISH_AUDIO_MODEL = process.env.FISH_AUDIO_MODEL || "s2.1-pro-free";
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const LOCAL_MODEL = process.env.OLLAMA_MODEL || "gemma3:4b";
@@ -40,12 +43,17 @@ const ALLOWED_MODELS = new Set([
 
 const configStore = new ConfigStore(DATA_DIR);
 const dataStore = new DataStore(DATA_DIR);
+const routineLearner = new RoutineLearner(DATA_DIR);
 const mcpManager = new MCPManager(() => configStore.get());
-const toolRegistry = new ToolRegistry({ dataStore, configStore, mcpManager, dataDir: DATA_DIR });
+const browserBridge = new BrowserWorkspaceBridge(DATA_DIR);
+const cognitiveCore = new CognitiveCore(DATA_DIR);
+const toolRegistry = new ToolRegistry({ dataStore, configStore, mcpManager, browserBridge, dataDir: DATA_DIR });
 const agentRuntime = new AgentRuntime({
   configStore,
   dataStore,
   toolRegistry,
+  routineLearner,
+  cognitiveCore,
   credentials: { openai: () => readApiKey(), groq: () => readCredential(GROQ_KEY_PATH), gemini: () => readCredential(GEMINI_KEY_PATH) },
 });
 
@@ -105,7 +113,7 @@ async function getFishVoices() {
   const voices = [...new Map(responses.flat()
     .filter((voice) => voice.type === "tts" && voice.state === "trained" && (voice.languages || []).includes("en"))
     .map((voice) => [voice._id, { id: voice._id, name: voice.title || "Untitled voice", personal: voice.personal }])).values()];
-  if (!voices.some((voice) => voice.id === FISH_AUDIO_VOICE_ID)) voices.unshift({ id: FISH_AUDIO_VOICE_ID, name: "Sarah", personal: false });
+  if (!voices.some((voice) => voice.id === FISH_AUDIO_VOICE_ID)) voices.unshift({ id: FISH_AUDIO_VOICE_ID, name: "Jarvis | Iron Man", personal: false });
   fishVoiceCache = { loadedAt: Date.now(), items: voices };
   return voices;
 }
@@ -129,14 +137,14 @@ class LocalWhisper {
   }
 
   available() {
-    const executable = process.env.JERVIS_WHISPER_EXE;
+    const executable = process.env.JARVIS_WHISPER_EXE || process.env.JERVIS_WHISPER_EXE;
     const venvPython = path.join(__dirname, ".venv", "Scripts", "python.exe");
     return Boolean((executable && fs.existsSync(executable)) || fs.existsSync(venvPython) || fs.existsSync(WHISPER_SCRIPT));
   }
 
   async start() {
     if (this.process && this.ready) return this.ready;
-    const executable = process.env.JERVIS_WHISPER_EXE;
+    const executable = process.env.JARVIS_WHISPER_EXE || process.env.JERVIS_WHISPER_EXE;
     const venvPython = path.join(__dirname, ".venv", "Scripts", "python.exe");
     const command = executable && fs.existsSync(executable)
       ? executable
@@ -148,10 +156,10 @@ class LocalWhisper {
       env: {
         ...process.env,
         HF_HOME: path.join(DATA_DIR, "models"),
-        JERVIS_WHISPER_MODEL: process.env.JERVIS_WHISPER_MODEL || configStore.get().speechRecognition.whisperModel,
-        JERVIS_WHISPER_DEVICE: process.env.JERVIS_WHISPER_DEVICE || configStore.get().speechRecognition.device,
-        JERVIS_WHISPER_MIN_CONFIDENCE: String(configStore.get().speechRecognition.minConfidence),
-        JERVIS_WHISPER_NO_SPEECH_THRESHOLD: String(configStore.get().speechRecognition.noSpeechThreshold),
+        JARVIS_WHISPER_MODEL: process.env.JARVIS_WHISPER_MODEL || process.env.JERVIS_WHISPER_MODEL || configStore.get().speechRecognition.whisperModel,
+        JARVIS_WHISPER_DEVICE: process.env.JARVIS_WHISPER_DEVICE || process.env.JERVIS_WHISPER_DEVICE || configStore.get().speechRecognition.device,
+        JARVIS_WHISPER_MIN_CONFIDENCE: String(configStore.get().speechRecognition.minConfidence),
+        JARVIS_WHISPER_NO_SPEECH_THRESHOLD: String(configStore.get().speechRecognition.noSpeechThreshold),
       },
     });
     this.process.stderr.on("data", (chunk) => console.error(`[whisper] ${String(chunk).trim()}`));
@@ -192,7 +200,7 @@ class LocalWhisper {
   async transcribe(buffer, extension) {
     await this.start();
     const id = crypto.randomUUID();
-    const tempPath = path.join(os.tmpdir(), `jervis-${id}.${extension}`);
+    const tempPath = path.join(os.tmpdir(), `jarvis-${id}.${extension}`);
     fs.writeFileSync(tempPath, buffer);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -223,6 +231,7 @@ app.get("/api/status", async (_req, res) => {
     groqConfigured,
     geminiConfigured,
     recommendedModel,
+    permissionMode: config.permissions?.mode || "standard",
     fishAudioConfigured: Boolean(readFishAudioKey()),
     model: DEFAULT_MODEL,
     localModel: LOCAL_MODEL,
@@ -235,6 +244,7 @@ app.get("/api/status", async (_req, res) => {
       agentPlanner: config.assistant.plannerEnabled,
       evaluator: config.assistant.evaluatorEnabled,
       knowledgeGraph: true,
+      routineLearning: config.assistant.routineLearningEnabled,
       diary: true,
       nutrition: true,
       webTools: true,
@@ -251,6 +261,8 @@ app.get("/api/status", async (_req, res) => {
       documentAndPdfTools: true,
       securityVault: true,
       deviceAndPhoneTools: true,
+      adaptiveWorkspaceMemory: true,
+      cognitiveAgent: true,
     },
   });
 });
@@ -264,6 +276,30 @@ app.get("/api/config", (_req, res) => {
   });
 });
 
+app.get("/api/routines", (_req, res) => {
+  const config = configStore.get();
+  res.json({ enabled: config.assistant.routineLearningEnabled, ...routineLearner.snapshot() });
+});
+
+app.delete("/api/routines", (_req, res) => {
+  routineLearner.clear();
+  res.json({ cleared: true });
+});
+
+app.get("/api/cognitive", (_req, res) => res.json(agentRuntime.cognitiveSnapshot()));
+
+app.post("/api/cognitive/cancel", (_req, res) => {
+  res.json({ cancelled: agentRuntime.cancel("Cancelled by user.") });
+});
+
+app.post("/api/cognitive/pause", (_req, res) => {
+  res.json({ paused: cognitiveCore.pause("Paused by user.") });
+});
+
+app.post("/api/cognitive/resume", async (req, res) => {
+  res.json({ resumed: await cognitiveCore.resume(req.body?.goalId) });
+});
+
 app.put("/api/config", async (req, res) => {
   const patch = req.body && typeof req.body === "object" ? structuredClone(req.body) : {};
   if (patch.llm?.apiKey === "[configured]") delete patch.llm.apiKey;
@@ -275,7 +311,35 @@ app.put("/api/config", async (req, res) => {
 
 app.get("/api/tools", async (_req, res) => {
   const tools = await toolRegistry.list();
-  res.json(tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })));
+  res.json(tools.map(({ name, description, capabilities, riskLevel, requiresConfirmation, inputSchema }) => ({ name, description, capabilities, riskLevel, requiresConfirmation, inputSchema })));
+});
+
+app.get("/api/workspaces", (_req, res) => res.json(toolRegistry.workspaces.list()));
+app.get("/api/workspaces/:name", (req, res) => {
+  try { res.json(toolRegistry.workspaces.get(req.params.name)); }
+  catch (error) { res.status(404).json({ error: error.message }); }
+});
+
+app.post("/api/workspaces/browser/pair", (req, res) => {
+  try {
+    const origin = String(req.headers.origin || "chrome-extension://local-companion");
+    res.json(browserBridge.pair(origin));
+  } catch (error) { res.status(403).json({ error: error.message }); }
+});
+
+function requireBrowserBridge(req, res, next) {
+  if (!browserBridge.authorized(req.headers["x-jarvis-bridge-key"])) return res.status(401).json({ error: "Invalid browser companion key." });
+  next();
+}
+
+app.get("/api/workspaces/browser/poll", requireBrowserBridge, async (req, res) => {
+  try { res.json(await browserBridge.poll({ clientId: req.query.clientId, browser: req.query.browser })); }
+  catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post("/api/workspaces/browser/respond", requireBrowserBridge, (req, res) => {
+  try { res.json(browserBridge.respond(req.body || {})); }
+  catch (error) { res.status(400).json({ error: error.message }); }
 });
 
 app.get("/api/dashboard", async (_req, res) => {
@@ -311,7 +375,7 @@ app.get("/api/voices", async (_req, res) => {
   try {
     res.json({ defaultVoiceId: FISH_AUDIO_VOICE_ID, voices: await getFishVoices() });
   } catch (error) {
-    res.status(502).json({ error: error?.message || "Fish Audio voices could not be loaded.", defaultVoiceId: FISH_AUDIO_VOICE_ID, voices: [{ id: FISH_AUDIO_VOICE_ID, name: "Sarah", personal: false }] });
+    res.status(502).json({ error: error?.message || "Fish Audio voices could not be loaded.", defaultVoiceId: FISH_AUDIO_VOICE_ID, voices: [{ id: FISH_AUDIO_VOICE_ID, name: "Jarvis | Iron Man", personal: false }] });
   }
 });
 
@@ -408,7 +472,7 @@ app.post(
     try {
       const mimeType = String(req.headers["content-type"] || "audio/webm").split(";")[0];
       const extension = mimeType.includes("wav") ? "wav" : mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp4") ? "m4a" : mimeType.includes("mpeg") ? "mp3" : "webm";
-      const transcriptionMode = String(req.headers["x-jervis-transcription-mode"] || "wake");
+      const transcriptionMode = String(req.headers["x-jarvis-transcription-mode"] || "wake");
       const transcribeCloud = async (apiKey, baseURL, model) => {
         const client = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
         const file = await toFile(req.body, `microphone.${extension}`, { type: mimeType });
@@ -508,6 +572,8 @@ app.post("/api/chat", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
+  req.once("aborted", () => agentRuntime.cancel("Client disconnected."));
+
   try {
     await agentRuntime.run({ messages, model, emit: (event) => res.write(`${JSON.stringify(event)}\n`) });
   } catch (error) {
@@ -536,7 +602,7 @@ app.use((_req, res, next) => {
 });
 
 app.listen(PORT, "127.0.0.1", () => {
-  console.log(`JERVIS core listening at http://127.0.0.1:${PORT}`);
+  console.log(`JARVIS core listening at http://127.0.0.1:${PORT}`);
   if (localWhisper.available()) {
     localWhisper.start().catch((error) => console.error(`[whisper] Warmup failed: ${error?.message || error}`));
   }

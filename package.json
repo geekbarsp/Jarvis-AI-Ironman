@@ -1,5 +1,5 @@
 {
-  "name": "jervis-assistant",
+  "name": "jarvis-assistant",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -36,8 +36,8 @@
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "com.jervis.assistant",
-    "productName": "JERVIS",
+    "appId": "com.jarvis.assistant",
+    "productName": "JARVIS",
     "asar": true,
     "directories": {
       "output": "release"
@@ -47,6 +47,7 @@
       "electron/**/*",
       "core/**/*",
       "legacy_runtime/**/*",
+      "browser-extension/**/*",
       "assets/**/*",
       "backend/**/*",
       "server.js",
@@ -54,13 +55,13 @@
     ],
     "win": {
       "target": "portable",
-      "icon": "assets/jervis-icon.png",
-      "artifactName": "JERVIS-${version}-portable.${ext}"
+      "icon": "assets/jarvis-icon.png",
+      "artifactName": "JARVIS-${version}-portable.${ext}"
     },
     "extraResources": [
       {
-        "from": "backend/dist/jervis-whisper.exe",
-        "to": "jervis-whisper.exe"
+        "from": "backend/dist/jarvis-whisper.exe",
+        "to": "jarvis-whisper.exe"
       }
     ]
   }

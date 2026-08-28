@@ -160,7 +160,7 @@ export class PersonalAssistant {
     const delay = new Date(item.at).getTime() - Date.now();
     if (delay <= 0 || delay > 2_147_000_000) return;
     this.timers.set(item.id, setTimeout(() => {
-      this.notify("JERVIS Reminder", item.text);
+      this.notify("JARVIS Reminder", item.text);
       item.done = true;
       this.timers.delete(item.id);
       this.save();

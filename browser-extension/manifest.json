@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "JARVIS Workspace Companion",
+  "version": "1.0.0",
+  "description": "Captures and restores Chrome or Edge tabs only when JARVIS requests a workspace action.",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "JARVIS Workspace Companion"
+  }
+}

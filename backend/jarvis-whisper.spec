@@ -25,7 +25,7 @@ executable = EXE(
     analysis.binaries,
     analysis.datas,
     [],
-    name="jervis-whisper",
+    name="jarvis-whisper",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 const targets = await fetch("http://127.0.0.1:9224/json").then((response) => response.json());
 const target = targets.find((item) => item.type === "page" && item.url.includes("8787"));
-if (!target) throw new Error("JERVIS renderer target is unavailable.");
+if (!target) throw new Error("JARVIS renderer target is unavailable.");
 
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
@@ -37,6 +37,6 @@ const layout = await call("Runtime.evaluate", {
   returnByValue: true,
 });
 const screenshot = await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-fs.writeFileSync("release/jervis-dashboard.png", Buffer.from(screenshot.data, "base64"));
+fs.writeFileSync("release/jarvis-dashboard.png", Buffer.from(screenshot.data, "base64"));
 console.log(JSON.stringify(layout.result.value, null, 2));
 socket.close();

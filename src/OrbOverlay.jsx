@@ -4,7 +4,7 @@ import { CoreVisual } from "./App.jsx";
 export default function OrbOverlay() {
   const [orb, setOrb] = useState({ state: "awake", level: 0.25 });
 
-  useEffect(() => window.jervisDesktop?.onOrbState((next) => setOrb({
+  useEffect(() => window.jarvisDesktop?.onOrbState((next) => setOrb({
     state: next?.state || "awake",
     level: Number(next?.level) || 0,
   })), []);
@@ -14,7 +14,7 @@ export default function OrbOverlay() {
       <CoreVisual
         state={orb.state}
         level={orb.level}
-        onClick={() => window.jervisDesktop?.openMainWindow()}
+        onClick={() => window.jarvisDesktop?.openMainWindow()}
       />
     </main>
   );

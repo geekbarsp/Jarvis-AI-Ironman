@@ -17,17 +17,21 @@ export const DEFAULT_CONFIG = Object.freeze({
     geminiModel: "gemini-3.6-flash",
   },
   assistant: {
-    name: "JERVIS",
-    wakeAliases: ["wake up jarvis", "jarvis", "jervis", "jarves", "jarviss", "service"],
+    name: "JARVIS",
+    wakeAliases: ["wake up jarvis", "jarvis", "jarves", "jarviss", "service"],
     stopCommands: ["stop", "cancel", "quiet", "never mind", "nevermind"],
     timezone: "Asia/Manila",
     location: "Manila, Philippines",
     plannerEnabled: true,
     evaluatorEnabled: true,
     memoryDigestEnabled: true,
+    routineLearningEnabled: true,
     toolResultDigestEnabled: true,
     toolSelectionStrategy: "llm",
     maxAgentTurns: 7,
+    maxConsecutiveFailures: 3,
+    maxToolRetries: 2,
+    agentTimeoutMs: 120000,
   },
   dictation: {
     enabled: true,
@@ -41,6 +45,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     device: "cpu",
     minConfidence: 0.18,
     noSpeechThreshold: 0.7,
+  },
+  workspaceMemory: {
+    restoreTimeoutMs: 12000,
+    excludedProcesses: ["TabTip", "NVIDIA Overlay"],
+    excludedWindowClasses: ["CEF-OSC-WIDGET", "ShellHandwritingCanvas"],
+  },
+  permissions: {
+    mode: "standard",
   },
   tools: {
     braveApiKey: "",

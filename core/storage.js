@@ -102,7 +102,7 @@ export class DataStore {
   searchMemory(query, limit = 12) {
     const queryTokens = tokens(query);
     const dialogue = readJsonLines(this.dialoguePath, 3000).map((entry) => ({ type: "dialogue", ts: entry.ts, text: `${entry.role}: ${entry.content}` }));
-    const diary = readJsonLines(this.diaryPath, 1000).map((entry) => ({ type: "diary", ts: entry.ts, text: `User: ${entry.user}\nJERVIS: ${entry.assistant}` }));
+    const diary = readJsonLines(this.diaryPath, 1000).map((entry) => ({ type: "diary", ts: entry.ts, text: `User: ${entry.user}\nJARVIS: ${entry.assistant}` }));
     const graph = readJson(this.graphPath, { topics: {} });
     const facts = Object.entries(graph.topics || {}).flatMap(([topic, values]) => (values || []).map((fact) => ({ type: `knowledge:${topic}`, ts: fact.updatedAt, text: fact.text })));
     const meals = this.getMeals({ limit: 100 }).map((meal) => ({ type: "meal", ts: meal.ts, text: `meal food ate nutrition: ${meal.description}; ${meal.calories || "unknown"} kcal` }));

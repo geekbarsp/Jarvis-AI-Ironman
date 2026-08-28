@@ -1,8 +1,8 @@
-const port = process.env.JERVIS_CDP_PORT || "9225";
+const port = process.env.JARVIS_CDP_PORT || "9225";
 const targets = await fetch(`http://127.0.0.1:${port}/json`).then((response) => response.json());
 const mainTarget = targets.find((item) => item.type === "page" && !item.url.includes("orb=1"));
 const orbTarget = targets.find((item) => item.type === "page" && item.url.includes("orb=1"));
-if (!mainTarget || !orbTarget) throw new Error("JERVIS main or orb renderer is unavailable.");
+if (!mainTarget || !orbTarget) throw new Error("JARVIS main or orb renderer is unavailable.");
 
 async function connect(target) {
   const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -30,7 +30,7 @@ async function connect(target) {
 
 const main = await connect(mainTarget);
 const orb = await connect(orbTarget);
-await main.evaluate(`window.jervisDesktop.updateOrb({ visible: true, state: 'awake', level: 0.62 })`);
+await main.evaluate(`window.jarvisDesktop.updateOrb({ visible: true, state: 'awake', level: 0.62 })`);
 await new Promise((resolve) => setTimeout(resolve, 500));
 const revealed = await orb.evaluate(`(() => {
   const core = document.querySelector('.core-visual');
@@ -43,20 +43,20 @@ const revealed = await orb.evaluate(`(() => {
   };
 })()`);
 
-await main.evaluate(`window.jervisDesktop.hideMainWindow()`);
+await main.evaluate(`window.jarvisDesktop.hideMainWindow()`);
 await new Promise((resolve) => setTimeout(resolve, 500));
-const background = await main.evaluate(`window.jervisDesktop.getWindowState().then((windows) => ({ windows, rendererActive: document.visibilityState, microphoneActive: Boolean(document.querySelector('.core-visual.audio-active')) }))`, true);
-await main.evaluate(`window.jervisDesktop.updateOrb({ visible: true, state: 'speaking', level: 0.81 })`);
+const background = await main.evaluate(`window.jarvisDesktop.getWindowState().then((windows) => ({ windows, rendererActive: document.visibilityState, microphoneActive: Boolean(document.querySelector('.core-visual.audio-active')) }))`, true);
+await main.evaluate(`window.jarvisDesktop.updateOrb({ visible: true, state: 'speaking', level: 0.81 })`);
 await new Promise((resolve) => setTimeout(resolve, 300));
 const speaking = await orb.evaluate(`({ visibility: document.visibilityState, className: document.querySelector('.core-visual')?.className, level: Number(document.querySelector('.core-visual')?.style.getPropertyValue('--voice-level') || 0) })`);
 await orb.evaluate(`document.querySelector('.core-visual')?.click()`);
 await new Promise((resolve) => setTimeout(resolve, 300));
 const reopened = await main.evaluate(`document.visibilityState`);
-await main.evaluate(`window.jervisDesktop.updateOrb({ visible: false, state: 'armed', level: 0 })`);
+await main.evaluate(`window.jarvisDesktop.updateOrb({ visible: false, state: 'armed', level: 0 })`);
 
 console.log(JSON.stringify({ revealed, background, speaking, reopened }, null, 2));
 if (revealed.visibility !== "visible" || !revealed.transparent || revealed.bars !== 7 || revealed.level !== 0.62) throw new Error("Transparent orb did not reveal correctly.");
-if (background.windows.mainVisible || !background.windows.orbVisible || !background.microphoneActive) throw new Error("JERVIS did not remain active after the main window was hidden.");
+if (background.windows.mainVisible || !background.windows.orbVisible || background.windows.orbShapeRects < 300 || !background.microphoneActive) throw new Error("JARVIS did not remain active with a circular orb after the main window was hidden.");
 if (!speaking.className.includes("speaking") || speaking.level !== 0.81 || reopened !== "visible") throw new Error("Orb state or reopen interaction failed.");
 main.close();
 orb.close();

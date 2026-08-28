@@ -1,7 +1,7 @@
-const port = process.env.JERVIS_CDP_PORT || "9224";
+const port = process.env.JARVIS_CDP_PORT || "9224";
 const targets = await fetch(`http://127.0.0.1:${port}/json`).then((response) => response.json());
 const target = targets.find((item) => item.type === "page" && item.url.includes("8787"));
-if (!target) throw new Error("JERVIS renderer target is unavailable.");
+if (!target) throw new Error("JARVIS renderer target is unavailable.");
 
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });

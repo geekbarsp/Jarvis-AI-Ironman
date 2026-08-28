@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { ExtendedFeatures } from "../core/extended.js";
 
-const directory = fs.mkdtempSync(path.join(os.tmpdir(), "jervis-extended-"));
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-extended-"));
 const allowed = path.join(directory, "allowed");
 fs.mkdirSync(allowed);
 const guard = (value) => {
@@ -17,10 +17,10 @@ const extended = new ExtendedFeatures(directory, guard);
 try {
   const text = path.join(allowed, "office-source.txt");
   const pdf = path.join(allowed, "office-output.pdf");
-  fs.writeFileSync(text, "JERVIS Office conversion verification");
+  fs.writeFileSync(text, "JARVIS Office conversion verification");
   await extended.documents({ operation: "officeToPdf", path: text, output: pdf }, [allowed]);
 
-  const backup = path.join(allowed, "jervis-backup.zip");
+  const backup = path.join(allowed, "jarvis-backup.zip");
   fs.writeFileSync(path.join(directory, "api.txt"), "must-not-be-backed-up");
   fs.writeFileSync(path.join(directory, "personal-data.json"), "{}");
   await extended.fileManagement({ operation: "backup", output: backup, confirm: true }, [allowed]);

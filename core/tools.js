@@ -2,15 +2,42 @@ import { spawn } from "node:child_process";
 import dns from "node:dns/promises";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { load as loadHtml } from "cheerio";
 import { PersonalAssistant } from "./personal.js";
 import { ExtendedFeatures } from "./extended.js";
+import { WorkspaceService } from "./workspaces.js";
 
 const MAX_TOOL_TEXT = 18000;
+const RESTRICTED_TOOLS = new Set(["webSearch", "fetchWebPage", "getWeather", "getLocation", "utilities", "featureCatalogue", "toolSearchTool", "stop"]);
+const FULL_ONLY_TOOLS = new Set(["securityTools", "advancedFileManagement", "developerTools", "phoneTools", "refreshMCPTools"]);
+
+function permissionMode(config) {
+  return ["restricted", "standard", "full"].includes(config.permissions?.mode) ? config.permissions.mode : "standard";
+}
+
+function enforceToolPermission(name, args, config) {
+  const mode = permissionMode(config);
+  if (mode === "full") return;
+  if (mode === "restricted" && !RESTRICTED_TOOLS.has(name)) throw new Error(`${name} is blocked by Restricted AI permissions.`);
+  if (name.startsWith("mcp__") || FULL_ONLY_TOOLS.has(name)) throw new Error(`${name} requires Full Access in Settings.`);
+  if (name === "contacts" && args.operation === "contact") throw new Error("Calling, email, and messaging links require Full Access in Settings.");
+  if (name === "clipboard" && args.operation === "write") throw new Error("Changing the clipboard requires Full Access in Settings.");
+  if (name === "systemControl" && ["lock", "sleep", "hibernate", "restart", "shutdown"].includes(args.action)) throw new Error(`${args.action} requires Full Access in Settings.`);
+}
+
+function toolRoots(config) {
+  if (permissionMode(config) !== "full") return config.tools.allowedRoots;
+  if (process.platform !== "win32") return [path.parse(os.homedir()).root];
+  return Array.from({ length: 26 }, (_item, index) => `${String.fromCharCode(65 + index)}:\\`).filter((root) => fs.existsSync(root));
+}
 
 function descriptor(name, description, properties = {}, required = []) {
-  return { name, description, inputSchema: { type: "object", properties, required, additionalProperties: false } };
+  const highRisk = new Set(["contacts", "securityTools", "advancedFileManagement", "developerTools", "phoneTools", "workspaceDelete"]);
+  const mediumRisk = new Set(["localFiles", "manageApps", "systemControl", "clipboard", "reminders", "notes", "fileUtilities", "healthWellness", "studyTools", "calendarTools", "documentTools", "creativeTools", "workspaceSave", "workspaceRestore", "workspaceUpdate", "refreshMCPTools"]);
+  const riskLevel = highRisk.has(name) ? "high" : mediumRisk.has(name) ? "medium" : "low";
+  return { name, description, capabilities: [name], riskLevel, requiresConfirmation: riskLevel === "high", inputSchema: { type: "object", properties, required, additionalProperties: false } };
 }
 
 function isPrivateIp(address) {
@@ -32,7 +59,7 @@ async function publicUrl(value) {
 async function fetchText(url, options = {}) {
   let current = (await publicUrl(url)).href;
   for (let redirects = 0; redirects <= 5; redirects += 1) {
-    const response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(options.timeout || 12000), headers: { "User-Agent": "JERVIS/1.0 private desktop assistant", ...(options.headers || {}) } });
+    const response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(options.timeout || 12000), headers: { "User-Agent": "JARVIS/1.0 private desktop assistant", ...(options.headers || {}) } });
     if (response.status >= 300 && response.status < 400 && response.headers.get("location")) {
       current = (await publicUrl(new URL(response.headers.get("location"), current).href)).href;
       continue;
@@ -170,13 +197,14 @@ function localFiles(args, roots) {
 }
 
 export class ToolRegistry {
-  constructor({ dataStore, configStore, mcpManager, dataDir }) {
+  constructor({ dataStore, configStore, mcpManager, browserBridge, dataDir }) {
     this.dataStore = dataStore;
     this.configStore = configStore;
     this.mcpManager = mcpManager;
     this.dataDir = dataDir;
     this.personal = new PersonalAssistant(dataDir, allowedPath);
     this.extended = new ExtendedFeatures(dataDir, allowedPath);
+    this.workspaces = new WorkspaceService(dataDir, { browserBridge, configStore });
     this.builtins = [
       descriptor("screenshot", "Capture the user's current desktop screen so it can be inspected.", {}),
       descriptor("webSearch", "Search the live web and automatically fetch useful result extracts.", { query: { type: "string" }, count: { type: "integer", minimum: 1, maximum: 8 } }, ["query"]),
@@ -196,17 +224,23 @@ export class ToolRegistry {
       descriptor("contacts", "Save, list, search, delete, or contact private contacts through WhatsApp, email, or phone links.", { operation: { type: "string", enum: ["save", "list", "search", "delete", "contact"] }, name: { type: "string" }, phone: { type: "string" }, email: { type: "string" }, query: { type: "string" }, id: { type: "string" }, action: { type: "string", enum: ["whatsapp", "email", "call"] }, message: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("fileUtilities", "Analyze allowed folders for size, recent files, large files, and exact duplicates; or compress/extract after confirmation.", { operation: { type: "string", enum: ["size", "recent", "large", "duplicates", "compress", "extract"] }, path: { type: "string" }, output: { type: "string" }, limit: { type: "integer" }, confirm: { type: "boolean" } }, ["operation", "path"]),
       descriptor("utilities", "Perform arithmetic, generate a secure password, convert common units, roll dice, flip a coin, or calculate age.", { operation: { type: "string", enum: ["calculate", "password", "convert", "dice", "coin", "age"] }, expression: { type: "string" }, length: { type: "integer" }, value: { type: "number" }, from: { type: "string" }, to: { type: "string" }, sides: { type: "integer" }, birthDate: { type: "string" } }, ["operation"]),
-      descriptor("featureCatalogue", "List or search all JERVIS capabilities adapted from the local Jarvis reference repository.", { query: { type: "string" } }),
+      descriptor("featureCatalogue", "List or search all JARVIS capabilities adapted from the local Jarvis reference repository.", { query: { type: "string" } }),
       descriptor("healthWellness", "Log and summarize water, exercise, sleep, mood, stress, medication, weight, and other wellness entries; calculate BMI or estimated calorie needs.", { operation: { type: "string", enum: ["log", "list", "summary", "bmi", "calorieNeeds", "delete"] }, type: { type: "string" }, value: {}, unit: { type: "string" }, note: { type: "string" }, at: { type: "string" }, from: { type: "string" }, id: { type: "string" }, weightKg: { type: "number" }, heightCm: { type: "number" }, age: { type: "number" }, sex: { type: "string", enum: ["male", "female"] }, activity: { type: "string", enum: ["sedentary", "light", "moderate", "active", "veryActive"] }, confirm: { type: "boolean" } }, ["operation"]),
-      descriptor("studyTools", "Create, list, quiz, or delete private flashcard decks. Research, dictionary, and translation requests use JERVIS web and AI tools.", { operation: { type: "string", enum: ["add", "list", "quiz", "delete"] }, deck: { type: "string" }, question: { type: "string" }, answer: { type: "string" }, count: { type: "integer" }, id: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
+      descriptor("studyTools", "Create, list, quiz, or delete private flashcard decks. Research, dictionary, and translation requests use JARVIS web and AI tools.", { operation: { type: "string", enum: ["add", "list", "quiz", "delete"] }, deck: { type: "string" }, question: { type: "string" }, answer: { type: "string" }, count: { type: "integer" }, id: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("calendarTools", "Add, list, summarize, or delete private calendar events and meeting schedules.", { operation: { type: "string", enum: ["add", "list", "briefing", "delete"] }, title: { type: "string" }, start: { type: "string" }, end: { type: "string" }, location: { type: "string" }, note: { type: "string" }, from: { type: "string" }, to: { type: "string" }, id: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("documentTools", "Count or clean text; create email templates; create PDFs from text/images/Office/HTML; extract PDF text; or merge, split, compress, rotate, and watermark PDFs in allowed folders.", { operation: { type: "string", enum: ["wordCount", "cleanText", "emailTemplate", "textToPdf", "imagesToPdf", "officeToPdf", "pdfToText", "mergePdf", "splitPdf", "compressPdf", "rotatePdf", "watermarkPdf"] }, path: { type: "string" }, text: { type: "string" }, output: { type: "string" }, inputs: { type: "array", items: { type: "string" } }, pages: { type: "array", items: { type: "integer" } }, angle: { type: "number" }, watermark: { type: "string" }, subject: { type: "string" }, recipient: { type: "string" }, sender: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("creativeTools", "Generate QR codes and color palettes, identify the screen pixel under the cursor, or convert common image formats inside allowed folders.", { operation: { type: "string", enum: ["qrCode", "palette", "screenColor", "imageConvert"] }, text: { type: "string" }, path: { type: "string" }, output: { type: "string" }, size: { type: "integer" }, hue: { type: "number" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("securityTools", "Check a URL for warning signs, scan up to 100 requested TCP ports, or encrypt/decrypt an allowed file with AES-256-GCM. File operations require confirmation.", { operation: { type: "string", enum: ["scanUrl", "portScan", "encrypt", "decrypt"] }, url: { type: "string" }, host: { type: "string" }, ports: { type: "array", items: { type: "integer" } }, path: { type: "string" }, output: { type: "string" }, password: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("deviceDiagnostics", "Inspect Windows system, battery, disks, network adapters, USB devices, startup items, installed apps, processes, or Python packages without opening a console.", { operation: { type: "string", enum: ["system", "battery", "disk", "network", "usb", "startup", "apps", "processes", "pythonPackages"] } }, ["operation"]),
-      descriptor("advancedFileManagement", "Preview/perform organization and batch renaming, empty the Recycle Bin, or create a redacted JERVIS data backup. Mutations require confirmation.", { operation: { type: "string", enum: ["organizePreview", "organize", "batchRenamePreview", "batchRename", "emptyRecycleBin", "backup"] }, path: { type: "string" }, output: { type: "string" }, prefix: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
+      descriptor("advancedFileManagement", "Preview/perform organization and batch renaming, empty the Recycle Bin, or create a redacted JARVIS data backup. Mutations require confirmation.", { operation: { type: "string", enum: ["organizePreview", "organize", "batchRenamePreview", "batchRename", "emptyRecycleBin", "backup"] }, path: { type: "string" }, output: { type: "string" }, prefix: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("developerTools", "Inspect Git status/diffs, create confirmed commits/pushes, or list/install/uninstall Python packages with hidden processes inside allowed project folders.", { operation: { type: "string", enum: ["gitStatus", "gitDiff", "gitCommit", "gitPush", "pipList", "pipInstall", "pipUninstall"] }, path: { type: "string" }, files: { type: "array", items: { type: "string" } }, message: { type: "string" }, package: { type: "string" }, pythonPath: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
       descriptor("phoneTools", "Inspect a connected Android phone through ADB: connection, device details, battery, installed packages, notifications, or call state. Private data requires confirmation.", { operation: { type: "string", enum: ["status", "details", "battery", "packages", "notifications", "callState"] }, adbPath: { type: "string" }, confirm: { type: "boolean" } }, ["operation"]),
+      descriptor("workspaceSave", "Capture visible Windows applications, window layouts, monitors, and connected Chrome/Edge tabs into a new dynamically named local workspace. Use only when the user explicitly asks to remember or save the current setup.", { name: { type: "string" } }, ["name"]),
+      descriptor("workspaceRestore", "Restore a dynamically named saved workspace, reusing running apps and restoring windows and browser tabs. Exclusions apply only to this restore and do not modify the saved workspace.", { name: { type: "string" }, exclusions: { type: "array", items: { type: "string" } }, additions: { type: "array", items: { type: "string" } } }, ["name"]),
+      descriptor("workspaceUpdate", "Replace a saved workspace with the current desktop, or explicitly add/remove applications from it. Use captureCurrentState=true unless the user specifically asks for additions or removals.", { name: { type: "string" }, captureCurrentState: { type: "boolean" }, additions: { type: "array", items: { type: "string" } }, removals: { type: "array", items: { type: "string" } } }, ["name"]),
+      descriptor("workspaceDelete", "Permanently forget a dynamically named saved workspace after the user explicitly asks to delete or forget it.", { name: { type: "string" } }, ["name"]),
+      descriptor("workspaceList", "List all dynamically named workspaces remembered locally by JARVIS.", {}),
+      descriptor("workspaceInspect", "Show the applications, windows, monitor layout, and browser-tab summary stored inside a named workspace.", { name: { type: "string" } }, ["name"]),
       descriptor("toolSearchTool", "Discover additional built-in or MCP tools relevant to a task during the current reply.", { query: { type: "string" } }, ["query"]),
       descriptor("refreshMCPTools", "Reconnect configured MCP servers and refresh their tool catalogues.", {}),
       descriptor("stop", "Stop the current action or spoken response immediately.", {}),
@@ -248,9 +282,15 @@ export class ToolRegistry {
       creativeTools: /qr code|color palette|color picker|screen color|convert image|image format/,
       securityTools: /encrypt|decrypt|vault|phishing|malware link|scan url|suspicious link|port scan|scan ports/,
       deviceDiagnostics: /battery|disk health|network status|usb|startup apps|installed apps|processes|python packages|system monitor|device status/,
-      advancedFileManagement: /organize files|organize folder|batch rename|rename files|empty recycle|backup jervis|cloud backup/,
+      advancedFileManagement: /organize files|organize folder|batch rename|rename files|empty recycle|backup jarvis|cloud backup/,
       developerTools: /git status|git diff|git commit|git push|pip list|pip install|pip uninstall|python package/,
       phoneTools: /adb|android|phone battery|phone notification|phone packages|call state/,
+      workspaceSave: /(?:remember|save).*(?:workspace|setup|mode|desktop|everything|what.*open)|(?:call|name) it .*mode/,
+      workspaceRestore: /(?:activate|switch to|enter|restore|load|bring back|go into|open).*(?:workspace|setup|mode)/,
+      workspaceUpdate: /(?:update|replace|add|remove).*(?:workspace|setup|mode)/,
+      workspaceDelete: /(?:delete|forget).*(?:workspace|setup|mode)/,
+      workspaceList: /(?:list|what).*(?:workspaces|setups|modes).*(?:remember|saved)?|what (?:setups|modes) do you remember/,
+      workspaceInspect: /(?:inside|inspect|show|what).*(?:workspace|setup|mode)/,
     };
     const scored = all.map((tool) => {
       const text = `${tool.name} ${tool.description}`.toLowerCase();
@@ -271,14 +311,16 @@ export class ToolRegistry {
 
   async execute(name, args = {}) {
     const config = this.configStore.get();
+    enforceToolPermission(name, args, config);
     if (name.startsWith("mcp__")) return this.mcpManager.call(name, args);
+    const roots = toolRoots(config);
     switch (name) {
       case "screenshot": return captureScreenshot(this.dataDir);
       case "webSearch": return { text: await webSearch(String(args.query), Math.min(Number(args.count) || 5, 8), config.tools.braveApiKey) };
       case "fetchWebPage": return { text: await fetchWebPage(args) };
       case "getWeather": return { text: JSON.stringify(await weather(args.place || config.assistant.location), null, 2) };
       case "getLocation": return { text: JSON.stringify({ location: config.assistant.location, timezone: config.assistant.timezone }) };
-      case "localFiles": return { text: localFiles(args, config.tools.allowedRoots) };
+      case "localFiles": return { text: localFiles(args, roots) };
       case "searchMemory": return { text: this.dataStore.memoryContext(args.query, Math.min(Number(args.limit) || 12, 30)) || "No relevant memory found." };
       case "logMeal": return { text: JSON.stringify(this.dataStore.logMeal(args), null, 2) };
       case "fetchMeals": return { text: JSON.stringify(this.dataStore.getMeals(args), null, 2) };
@@ -289,19 +331,25 @@ export class ToolRegistry {
       case "reminders": return { text: this.personal.reminders(args) };
       case "notes": return { text: this.personal.collection("notes", args), destructive: args.operation === "delete" };
       case "contacts": return { text: args.operation === "contact" ? await this.personal.contactAction(args) : this.personal.collection("contacts", args), destructive: args.operation === "delete" };
-      case "fileUtilities": return { text: await this.personal.files(args, config.tools.allowedRoots), destructive: ["compress", "extract"].includes(args.operation) };
+      case "fileUtilities": return { text: await this.personal.files(args, roots), destructive: ["compress", "extract"].includes(args.operation) };
       case "utilities": return { text: this.personal.utilities(args) };
       case "featureCatalogue": return { text: this.extended.catalogue(args) };
       case "healthWellness": return { text: this.extended.health(args), destructive: args.operation === "delete" };
       case "studyTools": return { text: this.extended.study(args), destructive: args.operation === "delete" };
       case "calendarTools": return { text: this.extended.calendar(args), destructive: args.operation === "delete" };
-      case "documentTools": return { text: await this.extended.documents(args, config.tools.allowedRoots) };
-      case "creativeTools": return { text: await this.extended.creative(args, config.tools.allowedRoots) };
-      case "securityTools": return { text: await this.extended.security(args, config.tools.allowedRoots), destructive: ["encrypt", "decrypt"].includes(args.operation) };
+      case "documentTools": return { text: await this.extended.documents(args, roots) };
+      case "creativeTools": return { text: await this.extended.creative(args, roots) };
+      case "securityTools": return { text: await this.extended.security(args, roots), destructive: ["encrypt", "decrypt"].includes(args.operation) };
       case "deviceDiagnostics": return { text: await this.extended.diagnostics(args) };
-      case "advancedFileManagement": return { text: await this.extended.fileManagement(args, config.tools.allowedRoots), destructive: ["organize", "batchRename", "emptyRecycleBin", "backup"].includes(args.operation) };
-      case "developerTools": return { text: await this.extended.developer(args, config.tools.allowedRoots), destructive: ["gitCommit", "gitPush", "pipInstall", "pipUninstall"].includes(args.operation) };
+      case "advancedFileManagement": return { text: await this.extended.fileManagement(args, roots), destructive: ["organize", "batchRename", "emptyRecycleBin", "backup"].includes(args.operation) };
+      case "developerTools": return { text: await this.extended.developer(args, roots), destructive: ["gitCommit", "gitPush", "pipInstall", "pipUninstall"].includes(args.operation) };
       case "phoneTools": return { text: await this.extended.phone(args) };
+      case "workspaceSave": return { text: JSON.stringify(await this.workspaces.capture(args.name), null, 2) };
+      case "workspaceRestore": return { text: JSON.stringify(await this.workspaces.restore(args.name, { exclusions: args.exclusions || [], additions: args.additions || [] }), null, 2) };
+      case "workspaceUpdate": return { text: JSON.stringify(await this.workspaces.update(args.name, { captureCurrentState: args.captureCurrentState !== false, additions: args.additions || [], removals: args.removals || [] }), null, 2) };
+      case "workspaceDelete": return { text: JSON.stringify(this.workspaces.delete(args.name)), destructive: true };
+      case "workspaceList": return { text: JSON.stringify(this.workspaces.list(), null, 2) };
+      case "workspaceInspect": return { text: JSON.stringify(this.workspaces.get(args.name), null, 2) };
       case "toolSearchTool": return { text: JSON.stringify((await this.select(args.query, 20)).map((tool) => ({ name: tool.name, description: tool.description }))) };
       case "refreshMCPTools": return { text: JSON.stringify(await this.mcpManager.refresh(), null, 2) };
       case "stop": return { text: "Stopped.", stop: true };

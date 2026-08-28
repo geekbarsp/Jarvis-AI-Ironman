@@ -85,7 +85,7 @@ const CATALOGUE = Object.freeze({
   native: {
     voice: ["wake listening", "selected microphone", "dictation", "local transcription", "Fish Audio speech"],
     intelligence: ["Ollama", "Groq", "Gemini", "OpenAI", "planning", "memory", "tool routing"],
-    productivity: ["reminders", "notes", "contacts", "clipboard", "email and WhatsApp links", "app and website control"],
+    productivity: ["reminders", "notes", "contacts", "clipboard", "email and WhatsApp links", "app and website control", "adaptive workspace capture and restore"],
     files: ["safe search", "recent and large files", "duplicates", "ZIP compression and extraction", "folder size"],
     documents: ["word count", "text cleanup", "email templates", "text to PDF", "merge/split/rotate/watermark PDFs", "images to PDF"],
     wellness: ["water", "exercise", "sleep", "mood", "stress", "medication", "BMI", "calorie needs"],
@@ -289,7 +289,7 @@ export class ExtendedFeatures {
       fs.writeFileSync(output, await source.save({ useObjectStreams: true, addDefaultPage: false })); return `Repacked PDF to ${output}.`;
     }
     else if (operation === "watermarkPdf") {
-      const font = await source.embedFont(StandardFonts.HelveticaBold); const label = String(args.watermark || "JERVIS").slice(0, 100);
+      const font = await source.embedFont(StandardFonts.HelveticaBold); const label = String(args.watermark || "JARVIS").slice(0, 100);
       source.getPages().forEach((page) => page.drawText(label, { x: page.getWidth() / 4, y: page.getHeight() / 2, size: 36, font, color: rgb(0.5, 0.5, 0.5), opacity: 0.22, rotate: degrees(35) }));
     } else throw new Error("Unknown PDF operation.");
     fs.writeFileSync(output, await source.save()); return `Created ${output}.`;
@@ -350,10 +350,10 @@ export class ExtendedFeatures {
     if (operation === "encrypt") {
       const salt = crypto.randomBytes(16); const iv = crypto.randomBytes(12); const key = crypto.scryptSync(password, salt, 32); const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
       const encrypted = Buffer.concat([cipher.update(fs.readFileSync(input)), cipher.final()]); const tag = cipher.getAuthTag();
-      fs.writeFileSync(output, Buffer.concat([Buffer.from("JERVISVAULT1"), salt, iv, tag, encrypted]), { mode: 0o600 }); return `Encrypted ${input} to ${output}.`;
+      fs.writeFileSync(output, Buffer.concat([Buffer.from("JARVISVAULT1"), salt, iv, tag, encrypted]), { mode: 0o600 }); return `Encrypted ${input} to ${output}.`;
     }
     if (operation === "decrypt") {
-      const data = fs.readFileSync(input); if (data.subarray(0, 12).toString() !== "JERVISVAULT1") throw new Error("This is not a JERVIS vault file.");
+      const data = fs.readFileSync(input); if (!["JARVISVAULT1", "JERVISVAULT1"].includes(data.subarray(0, 12).toString())) throw new Error("This is not a JARVIS vault file.");
       const salt = data.subarray(12, 28); const iv = data.subarray(28, 40); const tag = data.subarray(40, 56); const key = crypto.scryptSync(password, salt, 32); const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv); decipher.setAuthTag(tag);
       fs.writeFileSync(output, Buffer.concat([decipher.update(data.subarray(56)), decipher.final()]), { mode: 0o600 }); return `Decrypted to ${output}.`;
     }
@@ -380,8 +380,8 @@ export class ExtendedFeatures {
   async fileManagement(args, roots) {
     const operation = args.operation || "organizePreview";
     if (operation === "backup") {
-      requireConfirm(args, "Creating a private JERVIS backup"); const output = this.allowedPath(required(args.output, "Backup ZIP output"), roots); if (fs.existsSync(output)) requireConfirm(args, `Overwriting ${output}`);
-      const staging = fs.mkdtempSync(path.join(os.tmpdir(), "jervis-backup-"));
+      requireConfirm(args, "Creating a private JARVIS backup"); const output = this.allowedPath(required(args.output, "Backup ZIP output"), roots); if (fs.existsSync(output)) requireConfirm(args, `Overwriting ${output}`);
+      const staging = fs.mkdtempSync(path.join(os.tmpdir(), "jarvis-backup-"));
       try {
         const names = ["personal-data.json", "extended-data.json", "meals.json", "memory.jsonl", "diary.jsonl", "knowledge-graph.json", "semantic-memory.json", "dictation-history.jsonl"];
         for (const name of names) { const source = path.join(this.dataDir, name); if (fs.existsSync(source)) fs.copyFileSync(source, path.join(staging, name)); }
@@ -415,7 +415,7 @@ export class ExtendedFeatures {
       const prefix = String(args.prefix || "file_").replace(/[<>:"/\\|?*]/g, "_"); const changes = files.map((entry, index) => ({ from: path.join(directory, entry.name), to: path.join(directory, `${prefix}${String(index + 1).padStart(3, "0")}${path.extname(entry.name)}`) }));
       if (operation === "batchRenamePreview") return JSON.stringify(changes.slice(0, 300), null, 2);
       requireConfirm(args, "Batch renaming files");
-      const staged = changes.map((change) => ({ ...change, temporary: `${change.from}.${crypto.randomUUID()}.jervis-tmp` })); staged.forEach((item) => fs.renameSync(item.from, item.temporary)); staged.forEach((item) => fs.renameSync(item.temporary, item.to));
+      const staged = changes.map((change) => ({ ...change, temporary: `${change.from}.${crypto.randomUUID()}.jarvis-tmp` })); staged.forEach((item) => fs.renameSync(item.from, item.temporary)); staged.forEach((item) => fs.renameSync(item.temporary, item.to));
       return `Renamed ${changes.length} files.`;
     }
     throw new Error("Unknown file-management operation.");

@@ -13,8 +13,22 @@ let tray = null;
 let escapeRegistered = false;
 let isQuitting = false;
 let lastOrbState = { visible: false, state: "awake", level: 0.25 };
+let orbShapeRects = 0;
 
-app.setName("JERVIS");
+app.setName("JARVIS");
+
+function migrateLegacyData(dataDir) {
+  const legacyDir = path.join(path.dirname(dataDir), "JERVIS");
+  if (legacyDir.toLowerCase() === dataDir.toLowerCase() || !fs.existsSync(legacyDir)) return;
+  if (!fs.existsSync(dataDir)) {
+    fs.renameSync(legacyDir, dataDir);
+    return;
+  }
+  for (const entry of fs.readdirSync(legacyDir, { withFileTypes: true })) {
+    const destination = path.join(dataDir, entry.name);
+    if (!fs.existsSync(destination)) fs.cpSync(path.join(legacyDir, entry.name), destination, { recursive: entry.isDirectory() });
+  }
+}
 
 function migrateCredentials(dataDir) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -37,7 +51,7 @@ async function waitForServer(url, attempts = 50) {
     }
     await new Promise((resolve) => setTimeout(resolve, 120));
   }
-  throw new Error("The local JERVIS core did not start.");
+  throw new Error("The local JARVIS core did not start.");
 }
 
 function showMainWindow() {
@@ -53,6 +67,20 @@ function positionOrbWindow() {
   const { x, y, width, height } = display.workArea;
   const [orbWidth, orbHeight] = orbWindow.getSize();
   orbWindow.setPosition(x + width - orbWidth - 22, y + height - orbHeight - 18, false);
+}
+
+function circularWindowShape(size, margin = 2) {
+  const radius = size / 2 - margin;
+  const center = size / 2;
+  const rectangles = [];
+  for (let y = margin; y < size - margin; y += 1) {
+    const distance = y + 0.5 - center;
+    const halfWidth = Math.sqrt(Math.max(0, radius * radius - distance * distance));
+    const x = Math.max(margin, Math.floor(center - halfWidth));
+    const right = Math.min(size - margin, Math.ceil(center + halfWidth));
+    if (right > x) rectangles.push({ x, y, width: right - x, height: 1 });
+  }
+  return rectangles;
 }
 
 function createOrbWindow(url) {
@@ -79,8 +107,13 @@ function createOrbWindow(url) {
   });
   window.setAlwaysOnTop(true, "floating");
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (typeof window.setShape === "function") {
+    const shape = circularWindowShape(340);
+    window.setShape(shape);
+    orbShapeRects = shape.length;
+  }
   window.loadURL(`${url}/?orb=1`);
-  window.webContents.once("did-finish-load", () => window.webContents.send("jervis:orb-state", lastOrbState));
+  window.webContents.once("did-finish-load", () => window.webContents.send("jarvis:orb-state", lastOrbState));
   window.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
@@ -91,12 +124,12 @@ function createOrbWindow(url) {
 }
 
 function createTray() {
-  tray = new Tray(path.join(APP_ROOT, "assets", "jervis-icon.png"));
-  tray.setToolTip("JERVIS - listening in the background");
+  tray = new Tray(path.join(APP_ROOT, "assets", "jarvis-icon.png"));
+  tray.setToolTip("JARVIS - listening in the background");
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open JERVIS", click: showMainWindow },
+    { label: "Open JARVIS", click: showMainWindow },
     { type: "separator" },
-    { label: "Quit JERVIS", click: () => { isQuitting = true; app.quit(); } },
+    { label: "Quit JARVIS", click: () => { isQuitting = true; app.quit(); } },
   ]));
   tray.on("double-click", showMainWindow);
 }
@@ -116,8 +149,8 @@ function createWindow(url) {
     minHeight: 620,
     show: false,
     backgroundColor: "#080b0f",
-    title: "JERVIS",
-    icon: path.join(APP_ROOT, "assets", "jervis-icon.png"),
+    title: "JARVIS",
+    icon: path.join(APP_ROOT, "assets", "jarvis-icon.png"),
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -160,7 +193,7 @@ function readDictationHotkey(dataDir) {
 
 function setEscapeShortcut(active) {
   if (active && !escapeRegistered) {
-    escapeRegistered = globalShortcut.register("Escape", () => mainWindow?.webContents.send("jervis:dictation-cancel"));
+    escapeRegistered = globalShortcut.register("Escape", () => mainWindow?.webContents.send("jarvis:dictation-cancel"));
   } else if (!active && escapeRegistered) {
     globalShortcut.unregister("Escape");
     escapeRegistered = false;
@@ -186,11 +219,12 @@ app.on("second-instance", () => {
 app.whenReady().then(async () => {
   try {
     const dataDir = app.getPath("userData");
+    migrateLegacyData(dataDir);
     migrateCredentials(dataDir);
-    process.env.JERVIS_DATA_DIR = dataDir;
+    process.env.JARVIS_DATA_DIR = dataDir;
     process.env.PORT = String(SERVER_PORT);
     if (app.isPackaged) {
-      process.env.JERVIS_WHISPER_EXE = path.join(process.resourcesPath, "jervis-whisper.exe");
+      process.env.JARVIS_WHISPER_EXE = path.join(process.resourcesPath, "jarvis-whisper.exe");
     }
     await import(pathToFileURL(path.join(APP_ROOT, "server.js")).href);
     const appUrl = isDev ? "http://127.0.0.1:5173" : `http://127.0.0.1:${SERVER_PORT}`;
@@ -200,36 +234,37 @@ app.whenReady().then(async () => {
     const hotkeys = [...new Set([requestedHotkey, "CommandOrControl+Alt+D", "CommandOrControl+Shift+Space"])];
     const registeredHotkey = hotkeys.find((hotkey) => globalShortcut.register(hotkey, () => {
       shell.beep();
-      mainWindow?.webContents.send("jervis:dictation-toggle");
+      mainWindow?.webContents.send("jarvis:dictation-toggle");
     }));
-    if (registeredHotkey) console.log(`JERVIS dictation shortcut: ${registeredHotkey}`);
+    if (registeredHotkey) console.log(`JARVIS dictation shortcut: ${registeredHotkey}`);
     else console.error(`Could not register a dictation shortcut (tried ${hotkeys.join(", ")}).`);
   } catch (error) {
     console.error(error);
-    dialog.showErrorBox("JERVIS could not start", error?.message || String(error));
+    dialog.showErrorBox("JARVIS could not start", error?.message || String(error));
     app.quit();
   }
 });
 
-ipcMain.on("jervis:dictation-state", (_event, active) => {
+ipcMain.on("jarvis:dictation-state", (_event, active) => {
   setEscapeShortcut(Boolean(active));
-  console.log(`JERVIS dictation: ${active ? "recording" : "stopped"}`);
+  console.log(`JARVIS dictation: ${active ? "recording" : "stopped"}`);
 });
-ipcMain.on("jervis:paste-text", (_event, text) => pasteIntoForeground(text));
-ipcMain.on("jervis:open-main", showMainWindow);
-ipcMain.on("jervis:hide-main", () => mainWindow?.hide());
-ipcMain.handle("jervis:window-state", () => ({
+ipcMain.on("jarvis:paste-text", (_event, text) => pasteIntoForeground(text));
+ipcMain.on("jarvis:open-main", showMainWindow);
+ipcMain.on("jarvis:hide-main", () => mainWindow?.hide());
+ipcMain.handle("jarvis:window-state", () => ({
   mainVisible: Boolean(mainWindow?.isVisible()),
   orbVisible: Boolean(orbWindow?.isVisible()),
+  orbShapeRects,
 }));
-ipcMain.on("jervis:orb-update", (_event, state) => {
+ipcMain.on("jarvis:orb-update", (_event, state) => {
   lastOrbState = {
     visible: Boolean(state?.visible),
     state: String(state?.state || "awake").slice(0, 32),
     level: Math.max(0, Math.min(1, Number(state?.level) || 0)),
   };
   if (!orbWindow || orbWindow.isDestroyed()) return;
-  orbWindow.webContents.send("jervis:orb-state", lastOrbState);
+  orbWindow.webContents.send("jarvis:orb-state", lastOrbState);
   if (lastOrbState.visible) {
     positionOrbWindow();
     orbWindow.showInactive();

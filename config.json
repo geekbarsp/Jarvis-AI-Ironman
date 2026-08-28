@@ -13,11 +13,10 @@
     "geminiModel": "gemini-3.6-flash"
   },
   "assistant": {
-    "name": "JERVIS",
+    "name": "JARVIS",
     "wakeAliases": [
       "wake up jarvis",
       "jarvis",
-      "jervis",
       "jarves",
       "jarviss",
       "service"

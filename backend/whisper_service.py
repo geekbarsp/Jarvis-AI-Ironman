@@ -1,4 +1,4 @@
-"""Persistent local speech-to-text worker for the JERVIS desktop app."""
+"""Persistent local speech-to-text worker for the JARVIS desktop app."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ def emit(payload: dict) -> None:
 
 
 def main() -> None:
-    model_name = os.environ.get("JERVIS_WHISPER_MODEL", "base.en")
-    device = os.environ.get("JERVIS_WHISPER_DEVICE", "cpu")
+    model_name = os.environ.get("JARVIS_WHISPER_MODEL") or os.environ.get("JERVIS_WHISPER_MODEL", "base.en")
+    device = os.environ.get("JARVIS_WHISPER_DEVICE") or os.environ.get("JERVIS_WHISPER_DEVICE", "cpu")
     compute_type = "float16" if device == "cuda" else "int8"
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    min_confidence = float(os.environ.get("JERVIS_WHISPER_MIN_CONFIDENCE", "0.3"))
-    no_speech_threshold = float(os.environ.get("JERVIS_WHISPER_NO_SPEECH_THRESHOLD", "0.5"))
+    min_confidence = float(os.environ.get("JARVIS_WHISPER_MIN_CONFIDENCE") or os.environ.get("JERVIS_WHISPER_MIN_CONFIDENCE", "0.3"))
+    no_speech_threshold = float(os.environ.get("JARVIS_WHISPER_NO_SPEECH_THRESHOLD") or os.environ.get("JERVIS_WHISPER_NO_SPEECH_THRESHOLD", "0.5"))
     emit({"type": "ready", "model": model_name, "device": device})
 
     for raw_line in sys.stdin:
@@ -36,7 +36,7 @@ def main() -> None:
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 400},
                 condition_on_previous_text=False,
-                hotwords="Jarvis JERVIS",
+                hotwords="Jarvis JARVIS",
             )
             segments = list(segments)
             accepted = [
@@ -47,7 +47,7 @@ def main() -> None:
             if not accepted:
                 raw_text = " ".join(segment.text.strip() for segment in segments).strip()
                 isolated_wake = re.fullmatch(
-                    r"(?:wake\s+up\s+)?(?:jarvis|jervis|jarves|jarviss|service|travis)[.!?,\s]*",
+                    r"(?:wake\s+up\s+)?(?:jarvis|jarves|jarviss|service|travis)[.!?,\s]*",
                     raw_text,
                     flags=re.IGNORECASE,
                 )
