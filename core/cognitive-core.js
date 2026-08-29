@@ -117,10 +117,12 @@ export class CognitiveCore {
     this.activeTask = null;
   }
 
-  async begin(request) {
+  async begin(request, { observe = true } = {}) {
     if (this.activeTask) this.cancel("Replaced by a newer user command.");
     const goal = this.goals.create(request);
-    const environment = await this.environment.snapshot();
+    const environment = observe
+      ? await this.environment.snapshot()
+      : { platform: process.platform, observedAt: new Date().toISOString(), activeApplication: "", activeWindow: "", runningApps: [], source: "deferred_for_fast_response" };
     const working = this.workingMemory.begin(request, goal.id, environment);
     this.activeTask = { taskId: working.id, goalId: goal.id, failures: 0, startedAt: Date.now(), controller: new AbortController() };
     this.events.publish("USER_COMMAND", { taskId: working.id, request });

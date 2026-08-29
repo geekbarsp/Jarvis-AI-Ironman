@@ -116,7 +116,7 @@ export default function App() {
   const [settings, setSettings] = useState(() => {
     const saved = loadJson(SETTINGS_KEY, {});
     return {
-      model: "groq:openai/gpt-oss-20b",
+      model: "ollama:gemma3:4b",
       speak: true,
       handsFree: true,
       microphoneId: "default",
@@ -130,6 +130,8 @@ export default function App() {
   const [voiceConfigured, setVoiceConfigured] = useState(false);
   const [cloudProviders, setCloudProviders] = useState([]);
   const [ollamaOnline, setOllamaOnline] = useState(false);
+  const [ollamaModels, setOllamaModels] = useState([]);
+  const [routeInfo, setRouteInfo] = useState({ route: "READY", engine: "HYBRID", provider: "", latencyMs: 0, cacheHit: false });
   const [permissionMode, setPermissionMode] = useState("standard");
   const [permissionSaving, setPermissionSaving] = useState(false);
   const [routineLearning, setRoutineLearning] = useState(true);
@@ -142,7 +144,7 @@ export default function App() {
   const [voiceLevel, setVoiceLevel] = useState(0);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [microphoneTest, setMicrophoneTest] = useState({ state: "idle", level: 0, message: "" });
-  const [dashboard, setDashboard] = useState({ system: {}, events: [], reminders: [] });
+  const [dashboard, setDashboard] = useState({ system: {}, context: {}, actions: { recent: [] }, events: [], reminders: [] });
   const [listeningMode, setListeningMode] = useState("off");
   const [now, setNow] = useState(new Date());
   const [error, setError] = useState("");
@@ -263,9 +265,10 @@ export default function App() {
         setVoiceConfigured(Boolean(data.fishAudioConfigured));
         setCloudProviders([data.groqConfigured && "Groq", data.geminiConfigured && "Gemini", data.openAiConfigured && "OpenAI"].filter(Boolean));
         setOllamaOnline(Boolean(data.ollamaOnline));
+        setOllamaModels(data.ollamaModels || []);
         setPermissionMode(data.permissionMode || "standard");
         setRoutineLearning(data.features?.routineLearning !== false);
-        setSettings((current) => current.model.startsWith("ollama:") && data.configured
+        setSettings((current) => data.ollamaOnline && data.recommendedModel?.startsWith("ollama:")
           ? { ...current, model: data.recommendedModel }
           : current);
       })
@@ -934,6 +937,8 @@ export default function App() {
           if (!line.trim()) continue;
           const event = JSON.parse(line);
           if (event.type === "error") throw new Error(event.error);
+          if (event.type === "route") setRouteInfo((current) => ({ ...current, ...event }));
+          if (event.type === "done") setRouteInfo((current) => ({ ...current, ...event }));
           if (event.type === "delta") {
             completeText += event.text;
             const snapshot = completeText;
@@ -1004,7 +1009,7 @@ export default function App() {
 
   const hasConversation = messages.some((message) => message.id !== "welcome");
   const activeMessages = messages.filter((message) => message.id !== "welcome");
-  const providerName = settings.model.split(":")[0].toUpperCase();
+  const providerName = routeInfo.provider && routeInfo.provider !== "none" ? routeInfo.provider.toUpperCase() : routeInfo.engine || "HYBRID";
   const visualStatus = isSpeaking ? "speaking" : status;
   const statusLabel = isSpeaking ? "JARVIS is speaking" : status === "awake" ? "Awake - waiting for command" : status === "armed" ? "Listening for wake word" : status === "listening" ? "Listening to your command" : status === "transcribing" ? "Understanding voice" : status === "thinking" ? "Processing request" : "Standing by";
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 18 ? "Good afternoon" : "Good evening";
@@ -1021,7 +1026,7 @@ export default function App() {
         <div className="date-display"><time>{formatTime(now)}</time><span>{new Intl.DateTimeFormat([], { month: "long", day: "numeric", year: "numeric" }).format(now)}</span></div>
         <div className="topbar-status">
           <span className={`status-chip ${ollamaOnline || configured ? "online" : "offline"}`}>
-            <Wifi size={13} /> {configured ? "CLOUD CORE" : ollamaOnline ? "LOCAL CORE" : "CORE OFFLINE"}
+            <Wifi size={13} /> {ollamaOnline || configured ? "HYBRID CORE" : "CORE OFFLINE"}
           </span>
           <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Open settings">
             <Settings2 size={18} />
@@ -1038,14 +1043,24 @@ export default function App() {
           </section>
           <section className="dashboard-section">
             <h3><Activity size={16} /> SYSTEM STATUS</h3>
+            <div className="stat-row"><span>CPU</span><div className="stat-track"><i style={{ width: `${dashboard.system.cpuPercent || 0}%` }} /></div><b>{dashboard.system.cpuPercent ?? "--"}%</b></div>
             <div className="stat-row"><span>Memory</span><div className="stat-track"><i style={{ width: `${dashboard.system.memoryUsedPercent || 0}%` }} /></div><b>{dashboard.system.memoryUsedPercent || 0}%</b></div>
             <div className="stat-row"><span>Uptime</span><div className="stat-track"><i style={{ width: `${Math.min(100, (dashboard.system.uptimeHours || 0) / 2)}%` }} /></div><b>{dashboard.system.uptimeHours || 0}h</b></div>
             <div className="stat-row"><span>Tools</span><div className="stat-track"><i style={{ width: `${Math.min(100, (dashboard.system.tools || 0) * 2.5)}%` }} /></div><b>{dashboard.system.tools || 0}</b></div>
             <div className="network-line"><span className={`signal-dot ${ollamaOnline || configured ? "online" : ""}`} /> CORE {ollamaOnline || configured ? "ONLINE" : "OFFLINE"}</div>
           </section>
           <section className="dashboard-section config-block">
+            <h3><BrainCircuit size={16} /> LIVE CONTEXT</h3>
+            <div className="config-row"><span>Application</span><b title={dashboard.context.activeWindow}>{dashboard.context.activeApplication || "UNKNOWN"}</b></div>
+            <div className="config-row"><span>Project</span><b title={dashboard.context.currentDirectory}>{dashboard.context.currentProject || "NONE"}</b></div>
+            <div className="config-row"><span>Privacy</span><b>{dashboard.context.privacyMode ? "ACTIVE" : "STANDARD"}</b></div>
+            <div className="config-row"><span>Last action</span><b title={dashboard.actions.recent?.[0]?.verification?.evidence?.[0]}>{dashboard.actions.recent?.[0] ? `${dashboard.actions.recent[0].tool} · ${dashboard.actions.recent[0].status}` : "NONE"}</b></div>
+          </section>
+          <section className="dashboard-section config-block">
             <h3><Cpu size={16} /> AI CONFIGURATION</h3>
             <div className="config-row"><span>Engine</span><b>{providerName}</b></div>
+            <div className="config-row"><span>Route</span><b title={routeInfo.intent}>{routeInfo.route?.replaceAll("_", " ") || "READY"}</b></div>
+            <div className="config-row"><span>Latency</span><b>{routeInfo.latencyMs ? `${routeInfo.latencyMs} MS` : "--"}</b></div>
             <div className="config-row"><span>Model</span><b title={settings.model}>{settings.model.split(":").at(-1)}</b></div>
             <div className="config-row"><span>Voice</span><b>{voiceConfigured && settings.speak ? "FISH AUDIO" : settings.speak ? "SYSTEM" : "OFF"}</b></div>
             <div className="config-row"><span>Microphone</span><b>{status === "listening" ? "MANUAL" : status === "armed" ? "WAKE ARMED" : "OFF"}</b></div>
@@ -1159,6 +1174,7 @@ export default function App() {
               <label htmlFor="model">Intelligence model</label>
               <div className="select-wrap">
                 <select id="model" value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}>
+                  {ollamaModels.map((name) => <option key={name} value={`ollama:${name}`}>Local {name} · Private</option>)}
                   <option value="groq:openai/gpt-oss-120b">Groq GPT-OSS 120B · Fast</option>
                   <option value="groq:openai/gpt-oss-20b">Groq GPT-OSS 20B · Efficient</option>
                   <option value="gemini:gemini-3.6-flash">Gemini 3.6 Flash · Balanced</option>

@@ -15,7 +15,10 @@ import { DataStore } from "./core/storage.js";
 import { ToolRegistry } from "./core/tools.js";
 import { BrowserWorkspaceBridge } from "./core/browser-bridge.js";
 import { CognitiveCore } from "./core/cognitive-core.js";
+import { CognitiveEventBus } from "./core/event-bus.js";
+import { ContextEngine } from "./core/context.js";
 import { normalizeSpeechText } from "./core/speech.js";
+import { formatProviderError } from "./core/provider-errors.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -47,8 +50,11 @@ const dataStore = new DataStore(DATA_DIR);
 const routineLearner = new RoutineLearner(DATA_DIR);
 const mcpManager = new MCPManager(() => configStore.get());
 const browserBridge = new BrowserWorkspaceBridge(DATA_DIR);
-const cognitiveCore = new CognitiveCore(DATA_DIR);
-const toolRegistry = new ToolRegistry({ dataStore, configStore, mcpManager, browserBridge, dataDir: DATA_DIR });
+const cognitiveEvents = new CognitiveEventBus(DATA_DIR);
+const contextConfig = configStore.get().context;
+const contextEngine = new ContextEngine({ configStore, browserBridge, eventBus: cognitiveEvents, fastCacheMs: contextConfig.fastCacheMs, slowCacheMs: contextConfig.slowCacheMs });
+const cognitiveCore = new CognitiveCore(DATA_DIR, { eventBus: cognitiveEvents, environment: contextEngine });
+const toolRegistry = new ToolRegistry({ dataStore, configStore, mcpManager, browserBridge, contextEngine, eventBus: cognitiveEvents, dataDir: DATA_DIR });
 const agentRuntime = new AgentRuntime({
   configStore,
   dataStore,
@@ -74,25 +80,16 @@ function readFishAudioKey() {
   return fs.readFileSync(FISH_AUDIO_KEY_PATH, "utf8").trim();
 }
 
-function configureCloudFirstRuntime() {
-  const groqConfigured = Boolean(readCredential(GROQ_KEY_PATH));
-  const geminiConfigured = Boolean(readCredential(GEMINI_KEY_PATH));
+function configureLocalFirstRuntime() {
   const current = configStore.get();
-  if (current.llm.provider !== "ollama" || (!groqConfigured && !geminiConfigured)) return;
+  if (current.hybrid?.localFirst === false) return;
+  const localModel = current.llm.localGeneralModel || current.llm.localFallbackModel || LOCAL_MODEL;
   configStore.update({
-    llm: groqConfigured ? {
-      provider: "groq",
-      chatModel: "groq:openai/gpt-oss-120b",
-      fastModel: "groq:openai/gpt-oss-20b",
-    } : {
-      provider: "gemini",
-      chatModel: "gemini:gemini-3.7-flash",
-      fastModel: "gemini:gemini-3.7-flash",
-    },
+    llm: { provider: "ollama", chatModel: localModel, fastModel: localModel },
   });
 }
 
-configureCloudFirstRuntime();
+configureLocalFirstRuntime();
 
 let fishVoiceCache = { loadedAt: 0, items: [] };
 
@@ -223,9 +220,12 @@ app.get("/api/status", async (_req, res) => {
   const openAiConfigured = Boolean(readApiKey());
   const groqConfigured = Boolean(readCredential(GROQ_KEY_PATH));
   const geminiConfigured = Boolean(readCredential(GEMINI_KEY_PATH));
-  const recommendedModel = groqConfigured
-    ? "groq:openai/gpt-oss-20b"
-    : geminiConfigured ? "gemini:gemini-3.7-flash" : openAiConfigured ? DEFAULT_MODEL : `ollama:${LOCAL_MODEL}`;
+  const preferredLocal = config.llm.localGeneralModel || LOCAL_MODEL;
+  const recommendedModel = ollamaModels.includes(preferredLocal)
+    ? `ollama:${preferredLocal}`
+    : ollamaModels.length ? `ollama:${ollamaModels[0]}`
+      : groqConfigured ? "groq:openai/gpt-oss-20b"
+        : geminiConfigured ? "gemini:gemini-3.7-flash" : openAiConfigured ? DEFAULT_MODEL : `ollama:${preferredLocal}`;
   res.json({
     configured: openAiConfigured || groqConfigured || geminiConfigured,
     openAiConfigured,
@@ -264,6 +264,13 @@ app.get("/api/status", async (_req, res) => {
       deviceAndPhoneTools: true,
       adaptiveWorkspaceMemory: true,
       cognitiveAgent: true,
+      contextEngine: true,
+      actionEngine: true,
+      verifiedActions: true,
+      hybridRouter: true,
+      responseCache: true,
+      tokenBudget: true,
+      undoHistory: true,
     },
   });
 });
@@ -288,6 +295,25 @@ app.delete("/api/routines", (_req, res) => {
 });
 
 app.get("/api/cognitive", (_req, res) => res.json(agentRuntime.cognitiveSnapshot()));
+app.get("/api/usage", (_req, res) => res.json(agentRuntime.usageSnapshot()));
+app.get("/api/routing", (_req, res) => res.json({ lastRoute: agentRuntime.lastRoute, recentRoutes: agentRuntime.usageSnapshot().recentRoutes || [] }));
+
+app.get("/api/context", async (req, res) => {
+  try { res.json(await contextEngine.snapshot(req.query.refresh === "true")); }
+  catch (error) { res.status(503).json({ error: error?.message || "System context is unavailable." }); }
+});
+
+app.get("/api/self-awareness", async (_req, res) => {
+  try { res.json(await toolRegistry.selfAwareness.report()); }
+  catch (error) { res.status(503).json({ error: error?.message || "Self-diagnostics are unavailable." }); }
+});
+
+app.get("/api/actions", (req, res) => res.json(toolRegistry.actionEngine.snapshot(Math.min(Number(req.query.limit) || 30, 100))));
+
+app.post("/api/actions/undo", async (_req, res) => {
+  try { res.json(await toolRegistry.execute("undoAction", {})); }
+  catch (error) { res.status(409).json({ error: error?.message || "The previous action could not be undone." }); }
+});
 
 app.post("/api/cognitive/cancel", (_req, res) => {
   res.json({ cancelled: agentRuntime.cancel("Cancelled by user.") });
@@ -351,15 +377,33 @@ app.get("/api/dashboard", async (_req, res) => {
   const personal = readPrivateJson("personal-data.json", { reminders: [] });
   const extended = readPrivateJson("extended-data.json", { calendar: [] });
   const now = Date.now();
-  const tools = await toolRegistry.list();
+  const [tools, context] = await Promise.all([toolRegistry.list(), contextEngine.snapshot()]);
+  const actions = toolRegistry.actionEngine.snapshot(5);
+  const notifications = toolRegistry.proactive.notifications.list({ limit: 5 });
   res.json({
     system: {
+      cpuPercent: context.systemMetrics?.cpuPercent ?? null,
       memoryUsedPercent: Math.round((1 - os.freemem() / os.totalmem()) * 100),
       memoryUsedGb: +((os.totalmem() - os.freemem()) / 2 ** 30).toFixed(1),
       memoryTotalGb: +(os.totalmem() / 2 ** 30).toFixed(1),
       uptimeHours: +(os.uptime() / 3600).toFixed(1),
       cores: os.cpus().length,
       tools: tools.length,
+    },
+    context: {
+      activeApplication: context.activeApplication,
+      activeWindow: context.activeWindow,
+      currentProject: context.currentProject,
+      currentDirectory: context.currentDirectory,
+      privacyMode: context.privacyMode,
+      monitorCount: context.monitors.length,
+    },
+    actions,
+    advanced: {
+      taskGraphs: toolRegistry.taskGraphs.list(5),
+      automations: toolRegistry.automations.list().slice(-5),
+      projects: toolRegistry.projectBrain.list().slice(-5),
+      notifications,
     },
     reminders: (personal.reminders || [])
       .filter((item) => !item.done && new Date(item.at).getTime() >= now)
@@ -382,11 +426,22 @@ app.get("/api/voices", async (_req, res) => {
 
 app.post("/api/tools/refresh", async (_req, res) => res.json(await mcpManager.refresh()));
 
+app.get("/api/task-graphs", (req, res) => res.json(toolRegistry.taskGraphs.list(req.query.limit)));
+app.get("/api/task-graphs/:id", (req, res) => {
+  const graph = toolRegistry.taskGraphs.get(String(req.params.id));
+  return graph ? res.json(graph) : res.status(404).json({ error: "Task graph not found." });
+});
+app.get("/api/automations", (_req, res) => res.json(toolRegistry.automations.list()));
+app.get("/api/automation-runs", (req, res) => res.json(toolRegistry.automations.runs(req.query.limit)));
+app.get("/api/projects", (_req, res) => res.json(toolRegistry.projectBrain.list()));
+app.get("/api/notifications", (req, res) => res.json(toolRegistry.proactive.notifications.list({ includeDismissed: req.query.includeDismissed === "true", limit: req.query.limit })));
+
 app.get("/api/memory", (_req, res) => res.json(dataStore.snapshot()));
 app.get("/api/meals", (req, res) => res.json(dataStore.getMeals(req.query)));
 app.delete("/api/meals/:id", (req, res) => res.json({ deleted: dataStore.deleteMeal(String(req.params.id)) }));
 app.get("/api/dictation/history", (req, res) => res.json(dataStore.getDictations(Math.min(Number(req.query.limit) || 200, 1000))));
 app.post("/api/dictation/history", (req, res) => {
+  if (configStore.get().privacy?.mode) return res.status(403).json({ error: "Dictation history is disabled while Privacy Mode is active." });
   const text = String(req.body?.text || "").trim();
   if (!text) return res.status(400).json({ error: "Dictation text is required." });
   dataStore.addDictation(text, String(req.body?.app || ""));
@@ -460,6 +515,7 @@ app.post(
   "/api/transcribe",
   express.raw({ type: ["audio/*", "application/octet-stream"], limit: "25mb" }),
   async (req, res) => {
+    if (configStore.get().privacy?.microphoneProcessing === false) return res.status(403).json({ error: "Microphone processing is disabled in Privacy settings." });
     const fishApiKey = readFishAudioKey();
     const openAiApiKey = readApiKey();
     const groqApiKey = readCredential(GROQ_KEY_PATH);
@@ -474,24 +530,26 @@ app.post(
       const mimeType = String(req.headers["content-type"] || "audio/webm").split(";")[0];
       const extension = mimeType.includes("wav") ? "wav" : mimeType.includes("ogg") ? "ogg" : mimeType.includes("mp4") ? "m4a" : mimeType.includes("mpeg") ? "mp3" : "webm";
       const transcriptionMode = String(req.headers["x-jarvis-transcription-mode"] || "wake");
-      const transcribeCloud = async (apiKey, baseURL, model) => {
+      const transcribeCloud = async (apiKey, baseURL, model, provider) => {
         const client = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
         const file = await toFile(req.body, `microphone.${extension}`, { type: mimeType });
-        return client.audio.transcriptions.create({
-          file,
-          model,
-          language: "en",
-          prompt: "Transcribe every spoken word in English. Preserve the wake phrases JARVIS and WAKE UP JARVIS exactly when spoken.",
-          response_format: "json",
-        });
+        try {
+          return await client.audio.transcriptions.create({
+            file,
+            model,
+            language: "en",
+            prompt: "Transcribe every spoken word in English. Preserve the wake phrases JARVIS and WAKE UP JARVIS exactly when spoken.",
+            response_format: "json",
+          });
+        } catch (error) { error.jarvisProvider = provider; throw error; }
       };
 
       const cloudApiKey = groqApiKey || (transcriptionMode === "command" ? openAiApiKey : "");
       if (cloudApiKey) {
         try {
           const transcription = groqApiKey
-            ? await transcribeCloud(groqApiKey, "https://api.groq.com/openai/v1", "whisper-large-v3-turbo")
-            : await transcribeCloud(openAiApiKey, "", "gpt-4o-mini-transcribe");
+            ? await transcribeCloud(groqApiKey, "https://api.groq.com/openai/v1", "whisper-large-v3-turbo", "groq")
+            : await transcribeCloud(openAiApiKey, "", "gpt-4o-mini-transcribe", "openai");
           return res.json({ text: transcription.text || "", cloud: groqApiKey ? "groq" : "openai" });
         } catch (cloudError) {
           if (!localWhisper.available()) throw cloudError;
@@ -525,15 +583,15 @@ app.post(
       }
 
       const transcription = groqApiKey
-        ? await transcribeCloud(groqApiKey, "https://api.groq.com/openai/v1", "whisper-large-v3-turbo")
-        : await transcribeCloud(openAiApiKey, "", "gpt-4o-mini-transcribe");
+        ? await transcribeCloud(groqApiKey, "https://api.groq.com/openai/v1", "whisper-large-v3-turbo", "groq")
+        : await transcribeCloud(openAiApiKey, "", "gpt-4o-mini-transcribe", "openai");
       res.json({ text: transcription.text || "" });
     } catch (error) {
       let message = error?.message || "Audio transcription failed.";
       if (error?.status === 401) {
         message = "The API key in api.txt was rejected. Check it and save the file again.";
       } else if (error?.status === 429) {
-        message = "This OpenAI account has no available API quota for voice transcription.";
+        message = `${error.jarvisProvider === "groq" ? "Groq" : "OpenAI"} reached its quota or rate limit for voice transcription.`;
       }
       res.status(error?.status >= 400 && error?.status < 500 ? error.status : 500).json({ error: message });
     }
@@ -545,25 +603,16 @@ app.post("/api/chat", async (req, res) => {
   const groqConfigured = Boolean(readCredential(GROQ_KEY_PATH));
   const geminiConfigured = Boolean(readCredential(GEMINI_KEY_PATH));
   const openAiConfigured = Boolean(readApiKey());
-  const cloudDefault = groqConfigured
-    ? "groq:openai/gpt-oss-20b"
-    : geminiConfigured ? "gemini:gemini-3.7-flash" : openAiConfigured ? DEFAULT_MODEL : `ollama:${LOCAL_MODEL}`;
-  const requestedModel = String(req.body?.model || cloudDefault);
-  let model = ALLOWED_MODELS.has(requestedModel) ? requestedModel : cloudDefault;
+  const config = configStore.get();
+  const preferredLocal = config.llm.localGeneralModel || LOCAL_MODEL;
+  const cloudDefault = groqConfigured ? "groq:openai/gpt-oss-20b" : geminiConfigured ? "gemini:gemini-3.7-flash" : openAiConfigured ? DEFAULT_MODEL : `ollama:${preferredLocal}`;
+  const requestedModel = String(req.body?.model || `ollama:${preferredLocal}`);
+  let model = ALLOWED_MODELS.has(requestedModel) || requestedModel.startsWith("ollama:") ? requestedModel : cloudDefault;
   if (requestedModel.startsWith("ollama:")) {
-    if (groqConfigured || geminiConfigured || openAiConfigured) {
-      model = cloudDefault;
-    } else {
-      const ollamaModels = await getOllamaModels();
-      model = ollamaModels.includes(requestedModel.slice(7)) ? requestedModel : cloudDefault;
-    }
+    const ollamaModels = await getOllamaModels();
+    model = ollamaModels.includes(requestedModel.slice(7)) ? requestedModel : cloudDefault;
   }
 
-  const providerConfigured = model.startsWith("groq:") ? readCredential(GROQ_KEY_PATH)
-    : model.startsWith("gemini:") ? readCredential(GEMINI_KEY_PATH) : readApiKey();
-  if (!model.startsWith("ollama:") && !providerConfigured) {
-    return res.status(503).json({ error: "The selected AI provider is not configured." });
-  }
   if (!messages.length) {
     return res.status(400).json({ error: "A message is required." });
   }
@@ -578,12 +627,7 @@ app.post("/api/chat", async (req, res) => {
   try {
     await agentRuntime.run({ messages, model, emit: (event) => res.write(`${JSON.stringify(event)}\n`) });
   } catch (error) {
-    let message = error?.message || "AI provider request failed.";
-    if (error?.status === 401) {
-      message = "The selected AI provider rejected its private API key.";
-    } else if (error?.status === 429) {
-      message = "This OpenAI account has no available API quota. Add billing or credits, then try again.";
-    }
+    const message = formatProviderError(error);
     res.write(`${JSON.stringify({ type: "error", error: message })}\n`);
   } finally {
     res.end();
@@ -604,6 +648,8 @@ app.use((_req, res, next) => {
 
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`JARVIS core listening at http://127.0.0.1:${PORT}`);
+  toolRegistry.automations.start();
+  toolRegistry.proactive.start();
   if (localWhisper.available()) {
     localWhisper.start().catch((error) => console.error(`[whisper] Warmup failed: ${error?.message || error}`));
   }

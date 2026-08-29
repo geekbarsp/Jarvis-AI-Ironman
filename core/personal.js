@@ -206,6 +206,12 @@ export class PersonalAssistant {
       await powershell(`Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class K { [DllImport("user32.dll")] public static extern void keybd_event(byte a, byte b, uint c, uint d); }'; [K]::keybd_event(${keyCodes[canonical]},0,0,0); [K]::keybd_event(${keyCodes[canonical]},0,2,0)`);
       return `System action completed: ${canonical}.`;
     }
+    if (action.replace(/[\s_-]/g, "") === "volumeset") {
+      const value = Math.max(0, Math.min(100, Number(args.value)));
+      if (!Number.isFinite(value)) throw new Error("Volume must be between 0 and 100.");
+      await powershell(`Add-Type -TypeDefinition @'\nusing System; using System.Runtime.InteropServices;\n[Guid(\"5CDF2C82-841E-4546-9722-0CF74078229A\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IAudioEndpointVolume { int a(); int b(); int c(); int d(); int SetMasterVolumeLevel(float l, Guid g); int SetMasterVolumeLevelScalar(float l, Guid g); }\n[Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IMMDevice { int Activate(ref Guid id, int clsCtx, IntPtr activationParams, out IAudioEndpointVolume aev); }\n[Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IMMDeviceEnumerator { int f(); int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint); }\n[ComImport, Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\")] class MMDeviceEnumerator {}\npublic class Audio { public static void Set(float value){ var e=(IMMDeviceEnumerator)new MMDeviceEnumerator(); IMMDevice d; e.GetDefaultAudioEndpoint(0,1,out d); IAudioEndpointVolume v; var id=typeof(IAudioEndpointVolume).GUID; d.Activate(ref id,23,IntPtr.Zero,out v); v.SetMasterVolumeLevelScalar(value,Guid.Empty); } }\n'@; [Audio]::Set(${value / 100})`);
+      return `Volume set to ${Math.round(value)}%.`;
+    }
     if (action === "lock") {
       await powershell("rundll32.exe user32.dll,LockWorkStation");
       return "Computer locked.";
@@ -249,12 +255,66 @@ export class PersonalAssistant {
     }
     if (operation === "cancel") {
       const item = this.data.reminders.find((entry) => entry.id === args.id && !entry.done);
-      if (!item) return "No active reminder matched that ID.";
+      if (!item) return JSON.stringify({ cancelled: false, count: 0, reminders: [] });
       item.done = true; clearTimeout(this.timers.get(item.id)); this.timers.delete(item.id); this.save();
-      return "Reminder cancelled.";
+      return JSON.stringify({ cancelled: true, count: 1, reminders: [item] });
+    }
+    if (operation === "cancelMany" || operation === "cancelAll") {
+      const ids = new Set((Array.isArray(args.ids) ? args.ids : []).map(String));
+      const matching = this.data.reminders.filter((item) => !item.done && (operation === "cancelAll" || ids.has(item.id)));
+      for (const item of matching) {
+        item.done = true;
+        clearTimeout(this.timers.get(item.id));
+        this.timers.delete(item.id);
+      }
+      if (matching.length) this.save();
+      return JSON.stringify({ cancelled: matching.length > 0, count: matching.length, reminders: matching });
+    }
+    if (operation === "update") {
+      const item = this.data.reminders.find((entry) => entry.id === args.id && !entry.done);
+      if (!item) return "No active reminder matched that ID.";
+      const at = args.at ? new Date(args.at) : new Date(item.at);
+      if (!Number.isFinite(at.getTime()) || at <= new Date()) throw new Error("The reminder time must be a valid future date/time.");
+      clearTimeout(this.timers.get(item.id));
+      this.timers.delete(item.id);
+      item.text = args.text ? safeName(args.text, "reminder text") : item.text;
+      item.at = at.toISOString();
+      this.save();
+      this.schedule(item);
+      return JSON.stringify(item, null, 2);
+    }
+    if (operation === "reconcileSchedule") {
+      const topic = safeName(args.topic, "schedule topic").toLowerCase();
+      const startAt = new Date(args.startAt);
+      const endAt = new Date(args.endAt);
+      if (!Number.isFinite(startAt.getTime()) || !Number.isFinite(endAt.getTime()) || endAt <= startAt) throw new Error("The schedule must have valid start and end times.");
+      if (endAt <= new Date()) throw new Error("The schedule end time must be in the future.");
+      const matching = this.data.reminders.filter((item) => !item.done && String(item.text || "").toLowerCase().includes(topic));
+      const sameTime = (left, right) => new Date(left).getTime() === right.getTime();
+      const expectedStartText = safeName(args.startText || `Start ${topic}`, "reminder text");
+      const expectedEndText = safeName(args.endText || `End ${topic}`, "reminder text");
+      const sameText = (left, right) => String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
+      const existingStart = matching.find((item) => sameText(item.text, expectedStartText) && sameTime(item.at, startAt));
+      const existingEnd = matching.find((item) => sameText(item.text, expectedEndText) && sameTime(item.at, endAt));
+      const retained = new Set([existingStart?.id, existingEnd?.id].filter(Boolean));
+      const superseded = matching.filter((item) => !retained.has(item.id));
+      for (const item of superseded) {
+        item.done = true;
+        clearTimeout(this.timers.get(item.id));
+        this.timers.delete(item.id);
+      }
+      const created = [];
+      if (!existingStart) created.push({ id: crypto.randomUUID(), text: expectedStartText, at: startAt.toISOString(), done: startAt <= new Date() });
+      if (!existingEnd) created.push({ id: crypto.randomUUID(), text: expectedEndText, at: endAt.toISOString(), done: false });
+      this.data.reminders.push(...created);
+      if (superseded.length || created.length) this.save();
+      for (const item of created.filter((entry) => !entry.done)) this.schedule(item);
+      return JSON.stringify({ topic, replaced: superseded.length, created: created.length, changed: Boolean(superseded.length || created.length), reminders: [existingStart, existingEnd, ...created].filter(Boolean) }, null, 2);
     }
     throw new Error("Unknown reminder operation.");
   }
+
+  activeReminders() { return structuredClone(this.data.reminders.filter((item) => !item.done)); }
 
   collection(kind, args) {
     const values = this.data[kind];

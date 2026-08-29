@@ -53,6 +53,7 @@ export class BrowserWorkspaceBridge {
     this.pending = new Map();
     this.waiters = new Map();
     this.key = this.loadKey();
+    this.latestSnapshot = { capturedAt: null, companionClients: [], windows: [] };
   }
 
   loadKey() {
@@ -135,8 +136,11 @@ export class BrowserWorkspaceBridge {
   async capture() {
     const responses = await this.request("capture");
     const snapshots = responses.filter((item) => !item.error).map((item) => sanitizeSnapshot(item.result, item.browser));
-    return { capturedAt: new Date().toISOString(), companionClients: snapshots.map((item) => item.browser), windows: snapshots.flatMap((item) => item.windows) };
+    this.latestSnapshot = { capturedAt: new Date().toISOString(), companionClients: snapshots.map((item) => item.browser), windows: snapshots.flatMap((item) => item.windows) };
+    return structuredClone(this.latestSnapshot);
   }
+
+  current() { return structuredClone(this.latestSnapshot); }
 
   async restore(snapshot, { exclusions = [] } = {}) {
     const excluded = exclusions.map((item) => String(item).toLowerCase());
